@@ -125,6 +125,43 @@ class CoAx:
             S = S / (np.sqrt(np.outer(energy, energy)) + 1e-12)
         return S
 
+    # ------------------------------------------------------------------ wake-up signature
+    def _head_norms(self, ablate: Sequence[Tuple[int, int]]) -> np.ndarray:
+        """Mean attention-output norm of every head (summed over positions/prompts), measured
+        under the given ablation. Captured from the output-projection input."""
+        nH, hd = self.model.num_heads, self.model.head_dim
+        total = np.zeros(self.model.num_units)
+        count = 0
+        handles = []
+
+        def mk(li):
+            def hook(_m, inp):
+                x = inp[0]
+                if x.dim() != 3:
+                    return
+                for hi in range(nH):
+                    n = x[..., hi * hd:(hi + 1) * hd].norm(dim=-1).sum().item()
+                    total[self.model.head_index(li, hi)] += float(n)
+            return hook
+
+        for li in range(self.model.num_layers):
+            handles.append(self.model._out_proj(li).register_forward_pre_hook(mk(li)))
+        try:
+            for t in self.teacher:
+                self.model.logits(t["ids"], ablate=ablate)
+                count += t["ids"].shape[0] * t["ids"].shape[1]
+        finally:
+            for h in handles:
+                h.remove()
+        return total / max(1, count)
+
+    def wakeup_ratios(self, seed: Sequence[Tuple[int, int]]) -> np.ndarray:
+        """Per-head output-norm ratio ``||output | seed ablated|| / ||output | clean||``. A dormant
+        backup *wakes up* (ratio > 1) once its primary is gone; most heads stay near 1."""
+        clean = self._head_norms([])
+        ablated = self._head_norms(list(seed))
+        return ablated / np.maximum(clean, 1e-9)
+
     def _features(self, student_top: List[torch.Tensor],
                   reference: Optional[List[torch.Tensor]] = None) -> np.ndarray:
         """Stacked centered Fisher feature rows ``[num_positions, top_r]`` (for synergy)."""

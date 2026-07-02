@@ -40,8 +40,9 @@ class Model:
         self.model = AutoModelForCausalLM.from_pretrained(name_or_path, torch_dtype=dtype).eval()
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
-        for p in self.model.parameters():
-            p.requires_grad_(False)
+        # Weights are never updated (no optimizer is ever created); we keep grad *enabled* so the
+        # gradient baselines can backprop the task metric to the activations. The CoAx scoring path
+        # runs under torch.no_grad (see `logits`), so it pays nothing for this.
 
         cfg = self.model.config
         self.num_layers = int(getattr(cfg, "n_layer", getattr(cfg, "num_hidden_layers", 0)))
