@@ -3,7 +3,7 @@
 # Conditional Co-Ablation (CoAx)
 ### Recovering Self-Repair Backups in Transformer Circuits
 
-[![Paper](https://img.shields.io/badge/paper-arXiv-b31b1b.svg)](https://arxiv.org/abs/XXXX.XXXXX)
+[![Paper](https://img.shields.io/badge/paper-arXiv-b31b1b.svg)](https://arxiv.org/abs/2607.01940)
 [![Project page](https://img.shields.io/badge/project-page-1f6fb0.svg)](https://gongzhiren.github.io/Conditional-Co-Ablation-website)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org)
@@ -114,11 +114,14 @@ WikiText-2; they are omitted here to keep the repo self-contained and single-mod
 ## Citation
 
 ```bibtex
-@inproceedings{gong2026coax,
-  title     = {Conditional Co-Ablation: Recovering Self-Repair Backups in Transformer Circuits},
-  author    = {Gong, Zhiren and Zeng, Zihao and Yuen, Chau and Lim, Wei Yang Bryan},
-  year      = {2026},
-  note      = {Project page: https://gongzhiren.github.io/Conditional-Co-Ablation-website}
+@misc{gong2026coax,
+  title         = {Conditional Co-Ablation: Recovering Self-Repair Backups in Transformer Circuits},
+  author        = {Gong, Zhiren and Zeng, Zihao and Yuen, Chau and Lim, Wei Yang Bryan},
+  year          = {2026},
+  eprint        = {2607.01940},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  note          = {Project page: https://gongzhiren.github.io/Conditional-Co-Ablation-website}
 }
 ```
 
