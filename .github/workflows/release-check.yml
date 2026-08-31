@@ -1,0 +1,33 @@
+name: Release checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  source-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check release contents
+        run: python scripts/check_release.py
+      - name: Compile Python sources
+        run: python -m compileall -q src experiments scripts
+      - name: Validate structured metadata
+        run: |
+          python - <<'PY'
+          import json
+          import tomllib
+          from pathlib import Path
+
+          json.loads(Path("results/reference_metrics.json").read_text())
+          with Path("pyproject.toml").open("rb") as handle:
+              tomllib.load(handle)
+          print("Structured metadata is valid.")
+          PY

@@ -9,12 +9,14 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org)
 [![Reproducible experiments](https://img.shields.io/badge/experiments-reproducible-brightgreen.svg)](REPRODUCIBILITY.md)
+[![Release checks](https://github.com/GongZhiren/Conditional-Co-Ablation/actions/workflows/release-check.yml/badge.svg)](https://github.com/GongZhiren/Conditional-Co-Ablation/actions/workflows/release-check.yml)
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/GongZhiren/Conditional-Co-Ablation/blob/main/notebooks/coax_quickstart.ipynb)
 
 **CoAx measures how much a component's ablation effect grows after a supplied
 primary circuit is removed. It is a forward-only, label-free way to recover
 dormant components that become load-bearing under intervention.**
 
-[Overview](#method) · [Quick start](#quick-start) · [Reproduce](#reproducing-the-core-paper-results) · [Models](#model-registry) · [Troubleshooting](#troubleshooting)
+[Overview](#method) · [When to use CoAx](#when-to-use-coax) · [Quick start](#quick-start) · [Reproduce](#reproducing-the-core-paper-results) · [Models](#model-registry) · [Troubleshooting](#troubleshooting)
 
 </div>
 
@@ -31,9 +33,9 @@ dormant components that become load-bearing under intervention.**
   intervention panels, and held-out completion across model families. See the
   latest [arXiv version](https://arxiv.org/abs/2607.01940) for the full study.
 - **August 2026 — improved open-source implementation.** The codebase now offers
-  a cleaner installable package, portable public model configuration, structured
-  experiment artifacts, resumable long runs, and streamlined reproduction
-  commands.
+  a cleaner installable package, a guided visual quickstart, portable public
+  model configuration, structured experiment artifacts, resumable long runs,
+  and streamlined reproduction commands.
 - **July 2026 — initial release.** Reference implementation for the first arXiv
   version.
 
@@ -56,6 +58,19 @@ the full 50,257-token vocabulary, zero ablation, and prompt seeds `1 15 22 8`.
 The three documented name-mover heads are supplied as `S`; the eight documented
 backup name-movers are used only to evaluate the resulting ranking.
 
+## When to use CoAx
+
+CoAx complements a supplied primary circuit: it asks what becomes important
+after that circuit is removed, rather than replacing primary-circuit discovery.
+
+| Research question | Suggested approach |
+|---|---|
+| Which components support the intact computation? | Attribution patching, EAP, or activation patching |
+| Is a supplied circuit incomplete because of redundancy or self-repair? | **CoAx** |
+| Which dormant components complete a supplied primary circuit? | **CoAx**, followed by causal validation |
+| What is the edge-level computation graph? | Edge-level circuit discovery such as EAP or ACDC |
+| Do the recovered backups actually carry repair? | Conditional freezing, knockout, or patching |
+
 ## Installation
 
 ```bash
@@ -77,6 +92,11 @@ with `hf auth login`. Set `HF_HOME` if the cache should live outside its default
 location. No checkpoint, cache, or machine-specific path is committed here.
 
 ## Quick start
+
+The [Colab quickstart](https://colab.research.google.com/github/GongZhiren/Conditional-Co-Ablation/blob/main/notebooks/coax_quickstart.ipynb)
+runs the reduced GPT-2-small experiment and turns its JSON artifact into head
+rankings and 12 × 12 score maps. No local setup is required beyond a Google
+Colab runtime.
 
 This reduced run checks the complete forward-only path. It is not the paper
 protocol and should not be compared with reported numbers.
@@ -278,16 +298,15 @@ generation, candidate exclusions, controls, seeds, and evaluation labels.
 
 ## Troubleshooting
 
-- **Gated model error:** accept the checkpoint license and run `hf auth login`,
-  or pass an authenticated local mirror through `--model-path`.
-- **Out of memory:** run on one visible GPU with `CUDA_VISIBLE_DEVICES=0`, lower
-  the sequence count for a smoke test, or use a positive `--top-r`. Do not compare
-  the approximation against full-vocabulary (`--top-r 0`) headline values.
-- **Offline cluster:** set `MODEL_PATH=/absolute/checkpoint/path` for Make targets,
-  or pass `--model-path` to any experiment. Paths are recorded only in your local
-  generated artifact and are never required in committed configuration.
-- **Interrupted panel:** rerun the identical command with `--resume`; mismatched
-  protocols are rejected instead of silently mixing results.
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Checkpoint download or gated-model error | Network access or an unaccepted model license | Run `hf auth login`, accept the checkpoint license, or pass a local mirror with `--model-path` |
+| CUDA out of memory | The prompt batch or vocabulary support is too large | Reduce prompts for a smoke test or use a positive `--top-r`; do not compare that approximation with full-vocabulary paper values |
+| Results differ slightly | CUDA kernels, package versions, or checkpoint revisions differ | Use `requirements-tested.txt`, retain artifact metadata, and compare rounded aggregate metrics |
+| Gradient baselines are unexpectedly slow | AtP/EAP baselines require backward passes | Use `--skip-grad` only for a fast CoAx check; omit it for the complete paper comparison |
+| A head ID looks wrong | Flattened IDs use the model's own head count | Convert with `layer = id // num_heads` and `head = id % num_heads` |
+| An intervention-panel run stopped | A long run was interrupted | Rerun the identical command with `--resume`; protocol mismatches are rejected |
+| An offline-cluster run cannot find weights | The public checkpoint is unavailable locally | Set `MODEL_PATH=/absolute/checkpoint/path` for Make targets or pass `--model-path` directly |
 
 ## Repository layout
 
@@ -295,6 +314,7 @@ generation, candidate exclusions, controls, seeds, and evaluation labels.
 configs/                 public checkpoint IDs and experiment configuration
 src/curvgraph/           current CoAx implementation and intervention utilities
 experiments/paper/       core paper reproduction entry points
+notebooks/               run-all quickstart and visual result walkthrough
 outputs/                 generated JSON artifacts (created at runtime, ignored)
 ```
 

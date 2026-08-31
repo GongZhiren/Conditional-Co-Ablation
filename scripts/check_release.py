@@ -9,7 +9,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TEXT_SUFFIXES = {".py", ".md", ".yaml", ".yml", ".toml", ".txt", ".sh", ".json", ".cff"}
+TEXT_SUFFIXES = {
+    ".py", ".md", ".yaml", ".yml", ".toml", ".txt", ".sh", ".json", ".cff", ".ipynb"
+}
 FORBIDDEN = {
     "local absolute path": re.compile(
         "(?:" + "/" + "scratch/|" + "/" + "home/|" + "/" + "Users/)"
@@ -64,6 +66,8 @@ def main() -> int:
         ROOT / "experiments/paper/matched_intervention_panel.py",
         ROOT / "results/panel_metric_match_hierarchical.json",
         ROOT / "assets/fig1.png",
+        ROOT / "notebooks/coax_quickstart.ipynb",
+        ROOT / ".github/workflows/release-check.yml",
     ]
     failures.extend(f"missing required file: {p.relative_to(ROOT)}" for p in required if not p.is_file())
 
