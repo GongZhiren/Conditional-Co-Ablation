@@ -1,0 +1,50 @@
+cff-version: 1.2.0
+message: "If you use CoAx, please cite the paper below."
+title: "Conditional Co-Ablation: Recovering Self-Repair Backups in Transformer Circuits"
+type: software
+version: 2.0.0
+date-released: 2026-08-31
+license: MIT
+repository-code: "https://github.com/GongZhiren/Conditional-Co-Ablation"
+url: "https://gongzhiren.github.io/Conditional-Co-Ablation-website"
+authors:
+  - family-names: Gong
+    given-names: Zhiren
+  - family-names: Zeng
+    given-names: Zihao
+  - family-names: Wang
+    given-names: Yixin
+  - family-names: Lu
+    given-names: He
+  - family-names: Zhang
+    given-names: Yichi
+  - family-names: Xiao
+    given-names: Ming
+  - family-names: Yuen
+    given-names: Chau
+  - family-names: Lim
+    given-names: Wei Yang Bryan
+preferred-citation:
+  type: article
+  title: "Conditional Co-Ablation: Recovering Self-Repair Backups in Transformer Circuits"
+  year: 2026
+  authors:
+    - family-names: Gong
+      given-names: Zhiren
+    - family-names: Zeng
+      given-names: Zihao
+    - family-names: Wang
+      given-names: Yixin
+    - family-names: Lu
+      given-names: He
+    - family-names: Zhang
+      given-names: Yichi
+    - family-names: Xiao
+      given-names: Ming
+    - family-names: Yuen
+      given-names: Chau
+    - family-names: Lim
+      given-names: Wei Yang Bryan
+  identifiers:
+    - type: url
+      value: "https://arxiv.org/abs/2607.01940"

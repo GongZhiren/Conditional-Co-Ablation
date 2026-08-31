@@ -1,0 +1,80 @@
+models:
+  # Public Hugging Face identifiers. Gated models require prior license acceptance.
+  llama-3.1-8b:
+    path: meta-llama/Meta-Llama-3.1-8B-Instruct
+    family: llama
+    torch_dtype: bfloat16
+    device_map: auto
+    cross_model_top_r: 4096
+  qwen2.5-7b:
+    path: Qwen/Qwen2.5-7B-Instruct
+    family: qwen
+    torch_dtype: bfloat16
+    device_map: auto
+    cross_model_top_r: 4096
+  # GPT-2-small has documented head-level IOI circuit roles.
+  gpt2-small:
+    path: gpt2
+    family: gpt2
+    torch_dtype: float32
+    device_map: auto
+  # Additional architectures used for held-out induction completion.
+  gpt2-medium:
+    path: gpt2-medium
+    family: gpt2
+    torch_dtype: float32
+    device_map: auto
+  gpt2-large:
+    path: gpt2-large
+    family: gpt2
+    torch_dtype: float32
+    device_map: auto
+  pythia-160m:
+    path: EleutherAI/pythia-160m
+    family: neox
+    torch_dtype: float32
+    device_map: auto
+  pythia-410m:
+    path: EleutherAI/pythia-410m
+    family: neox
+    torch_dtype: float32
+    device_map: auto
+  pythia-1.4b:
+    path: EleutherAI/pythia-1.4b
+    family: neox
+    torch_dtype: float32   # fp16 produces NaN affinities in the synergy normalization; fits in fp32
+    device_map: auto
+  gpt-neo-1.3b:
+    path: EleutherAI/gpt-neo-1.3B
+    family: gptneo
+    torch_dtype: float32
+    device_map: auto
+  gemma-2-2b:
+    path: google/gemma-2-2b
+    family: gemma2
+    torch_dtype: bfloat16   # Gemma-2 native; needs eager attn (logit soft-capping) -- set in runtime
+    device_map: auto
+  gemma-2-9b:
+    path: google/gemma-2-9b
+    family: gemma2
+    torch_dtype: bfloat16
+    device_map: auto
+  llama-2-13b:
+    path: meta-llama/Llama-2-13b-hf
+    family: llama
+    torch_dtype: bfloat16
+    device_map: auto
+  olmo-2-7b:
+    path: allenai/OLMo-2-1124-7B
+    family: olmo
+    torch_dtype: bfloat16
+    device_map: auto
+    cross_model_top_r: 4096
+
+tokenizer:
+  trust_remote_code: true
+  use_fast: true
+
+runtime:
+  max_seq_len: 1024
+  attn_implementation: eager

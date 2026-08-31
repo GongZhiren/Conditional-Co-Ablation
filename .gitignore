@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+build/
 .ipynb_checkpoints/
 .venv/
 venv/
@@ -9,6 +10,10 @@ env/
 *.pt
 *.pth
 *.safetensors
-results/
 outputs/
 *.log
+.cache/
+.hf_home/
+.env
+.env.*
+!.env.example

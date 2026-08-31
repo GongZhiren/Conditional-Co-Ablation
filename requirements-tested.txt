@@ -1,0 +1,10 @@
+# Versions used for the release smoke checks. Install the appropriate PyTorch
+# wheel for your CUDA/CPU platform, then install the remaining pinned packages.
+torch==2.8.0
+transformers==4.57.1
+accelerate==1.11.0
+huggingface-hub==0.36.2
+numpy==2.3.3
+scipy==1.16.3
+scikit-learn==1.7.2
+PyYAML==6.0.3

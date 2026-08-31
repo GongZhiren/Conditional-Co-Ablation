@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "conditional-coablation"
+version = "2.0.0"
+description = "Conditional co-ablation for recovering self-repair backups in transformer circuits"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "CoAx authors"}]
+dependencies = [
+  "torch>=2.2.0",
+  "transformers>=4.56.0",
+  "accelerate>=0.33.0",
+  "huggingface-hub>=0.34.0,<1.0",
+  "numpy>=1.26.0",
+  "scipy>=1.11.0",
+  "scikit-learn>=1.3.0",
+  "PyYAML>=6.0.1",
+]
+
+[project.urls]
+Paper = "https://arxiv.org/abs/2607.01940"
+Repository = "https://github.com/GongZhiren/Conditional-Co-Ablation"
+Homepage = "https://gongzhiren.github.io/Conditional-Co-Ablation-website"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["curvgraph*"]

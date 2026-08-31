@@ -1,0 +1,12 @@
+project:
+  name: conditional_coablation
+  seed: 42
+  output_root: outputs/coablation
+
+run:
+  model_key: gpt2-small
+  run_name: coax_default
+  copy_config_to_meta: true
+
+includes:
+  model: configs/model.yaml

@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "release": "2.0.0",
+  "description": "Machine-readable values for the principal paper results and their reproduction commands.",
+  "model": {
+    "key": "gpt2-small",
+    "checkpoint": "gpt2",
+    "dtype": "float32"
+  },
+  "headline_backup_recovery": {
+    "command": "make headline",
+    "num_prompts": 96,
+    "prompt_seeds": [1, 15, 22, 8],
+    "position_mode": "last",
+    "top_r": 0,
+    "roc_auc_mean_std": {
+      "coax": [0.9412593984962405, 0.004123851616907434],
+      "atp_star_graddrop": [0.8148496240601504, 0.031050699067039735],
+      "conditional_energy": [0.7582236842105263, 0.003540254419880598],
+      "eap_ig": [0.700422932330827, 0.01957253740588927],
+      "conditional_gradient": [0.6261748120300752, 0.04520758008348847],
+      "single_ablation": [0.6033834586466166, 0.006578686374708152],
+      "atp": [0.600328947368421, 0.03219769835649573]
+    },
+    "top_of_ranking": {
+      "coax_average_precision_mean_std": [0.5571516525954026, 0.01145739007571439],
+      "coax_precision_at_8_mean": 0.5,
+      "atp_star_average_precision_mean_std": [0.1736717722879837, 0.014701321492050393],
+      "atp_star_precision_at_8_mean": 0.125
+    }
+  },
+  "causal_freezing": {
+    "command": "make causal",
+    "metric": "freeze-induced IOI-margin loss",
+    "mean_std": {
+      "documented_backups": [0.5666181842486064, 0.0915431388365824],
+      "coax": [0.898838718732198, 0.0743098689572745],
+      "conditional_energy": [0.026681681474050034, 0.07553503072327536],
+      "coactivation": [1.9728775223096213, 0.0601383510122875],
+      "atp_star_graddrop": [1.5001007119814556, 0.03336882106881213],
+      "random": [0.266346553961436, 0.36912797952522286]
+    }
+  },
+  "circuit_completion": {
+    "command": "make completion",
+    "metric": "incompleteness (lower is better)",
+    "mean_std": {
+      "primary_only": [0.755, 0.074],
+      "matched_random_completion": [0.808, 0.206],
+      "coax_completion": [0.205, 0.030],
+      "documented_circuit": [0.276, 0.027]
+    }
+  },
+  "backup_role_knockout": {
+    "command": "make knockout",
+    "coax": {
+      "ioi_accuracy": 0.779,
+      "ioi_margin_distance": 0.989,
+      "answer_position_kl": 0.1733,
+      "unrelated_text_kl": 0.1397
+    },
+    "matched_random": {
+      "ioi_accuracy": 0.797,
+      "ioi_margin_distance": 1.269,
+      "answer_position_kl": 0.4271,
+      "unrelated_text_kl": 0.1525
+    }
+  },
+  "matched_hierarchical_panel": {
+    "command": "make panel",
+    "artifact": "results/panel_metric_match_hierarchical.json",
+    "protocol": {
+      "templates": 3,
+      "primary_sets": 4,
+      "num_prompts": 96,
+      "induction_sequences": 32,
+      "position_mode": "last",
+      "top_r": 0
+    },
+    "coax": {
+      "macro_spearman": 0.1231850997554424,
+      "nested_ci_95": [0.04686793296644953, 0.20051962667867476],
+      "positive_instances": [11, 12],
+      "positive_mechanism_clusters": [4, 4]
+    }
+  },
+  "cross_model_completion": {
+    "command": "make cross-model MODEL_KEY=<model-key>",
+    "protocol": {"n_detect": 32, "n_calib": 16, "n_eval": 64, "top_k": 10},
+    "metric": "completion gain over size-matched random",
+    "coax_and_role_matched_own": {
+      "pythia-160m": [4.53, 4.05],
+      "pythia-410m": [12.09, 8.96],
+      "pythia-1.4b": [4.94, 3.71],
+      "gpt-neo-1.3b": [1.44, 2.17],
+      "gemma-2-2b": [2.50, 1.72],
+      "qwen2.5-7b": [24.07, 3.82],
+      "olmo-2-7b": [2.66, 5.38],
+      "llama-3.1-8b": [2.79, 1.78]
+    },
+    "corrected_gradient_baselines": {
+      "pythia-160m": [3.5023477142236272, 3.511971298053217],
+      "pythia-410m": [9.230908234691954, 3.2413444737139856],
+      "pythia-1.4b": [3.071964765373848, 1.6959074324280325],
+      "gpt-neo-1.3b": [1.9437000457590285, 0.952994492536172],
+      "gemma-2-2b": [1.4890016557516184, 1.5244848400352107],
+      "qwen2.5-7b": [22.56616336986948, 2.3708624402493927],
+      "olmo-2-7b": [4.658751133401189, 1.7374157575695337],
+      "llama-3.1-8b": [2.6136737455013597, 1.7308397021887743]
+    },
+    "corrected_gradient_column_order": ["atp", "atp_star_graddrop"],
+    "corrected_family_macro": {"atp": 6.423282809174303, "atp_star_graddrop": 1.8555008278851381},
+    "column_order": ["coax", "own"]
+  }
+}
