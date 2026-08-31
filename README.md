@@ -4,17 +4,35 @@
 
 ### Recovering Self-Repair Backups in Transformer Circuits
 
-[![Paper](https://img.shields.io/badge/paper-arXiv-b31b1b.svg)](https://arxiv.org/abs/2607.01940)
-[![Project page](https://img.shields.io/badge/project-page-1f6fb0.svg)](https://gongzhiren.github.io/Conditional-Co-Ablation-website)
+**CoAx measures how much a component's ablation effect grows after a supplied
+primary circuit is removed. It is a forward-only, label-free way to recover
+dormant components that become load-bearing under intervention.**
+
+<table>
+  <tr>
+    <td align="center">
+      <a href="https://arxiv.org/abs/2607.01940"><strong>📄 Read the paper</strong></a><br>
+      <sub>Method, analysis, and full experiments</sub>
+    </td>
+    <td align="center">
+      <a href="https://gongzhiren.github.io/Conditional-Co-Ablation-website/"><strong>🌐 Explore the project</strong></a><br>
+      <sub>Visual results and the CoAx story</sub>
+    </td>
+    <td align="center">
+      <a href="https://gongzhiren.github.io/Conditional-Co-Ablation-website/#tutorial"><strong>▶ Watch the tutorial</strong></a><br>
+      <sub>A narrated 4½-minute walkthrough</sub>
+    </td>
+    <td align="center">
+      <a href="https://colab.research.google.com/github/GongZhiren/Conditional-Co-Ablation/blob/main/notebooks/coax_quickstart.ipynb"><strong>🚀 Try CoAx</strong></a><br>
+      <sub>Run the visual quickstart in Colab</sub>
+    </td>
+  </tr>
+</table>
+
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org)
 [![Reproducible experiments](https://img.shields.io/badge/experiments-reproducible-brightgreen.svg)](REPRODUCIBILITY.md)
 [![Release checks](https://github.com/GongZhiren/Conditional-Co-Ablation/actions/workflows/release-check.yml/badge.svg)](https://github.com/GongZhiren/Conditional-Co-Ablation/actions/workflows/release-check.yml)
-[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/GongZhiren/Conditional-Co-Ablation/blob/main/notebooks/coax_quickstart.ipynb)
-
-**CoAx measures how much a component's ablation effect grows after a supplied
-primary circuit is removed. It is a forward-only, label-free way to recover
-dormant components that become load-bearing under intervention.**
 
 [Overview](#method) · [When to use CoAx](#when-to-use-coax) · [Quick start](#quick-start) · [Reproduce](#reproducing-the-core-paper-results) · [Models](#model-registry) · [Troubleshooting](#troubleshooting)
 
