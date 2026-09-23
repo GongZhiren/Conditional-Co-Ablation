@@ -7,7 +7,7 @@ second-order signals that capture compensation:
 
   * pairwise synergy   I_uv = dz_{u,v} - dz_u - dz_v   (Fisher-weighted, centered)
       -> large for MUTUALLY-compensating / cooperating pairs (e.g. name-mover cliques).
-  * conditional compensation  comp_u(S) = ||dz_u | S ablated|| - ||dz_u | {}||
+  * conditional compensation  comp_u(S) = E(dz_u | S ablated) - E(dz_u | {})
       -> large for PARALLEL-SUBSTITUTE backups (dormant until the primaries S are gone).
 
 Both are computed with plain HF hooks via curvgraph.circuits primitives. Teacher top-r and
@@ -87,7 +87,9 @@ def auc_same_circuit(aff: np.ndarray, head_set: Sequence[int], members,
 class CoAblation:
     def __init__(self, bundle: ModelBundle, sequences: Sequence[torch.Tensor], top_r: int = 256,
                  ablation_mode: str = "zero", feature_mode: str = "fisher_centered",
-                 freeze_ln: str = "none", position_mode: str = "all"):
+                 freeze_ln: str = "none", position_mode: str = "all",
+                 project_last_only: bool = False):
+        C.ensure_intervention_safe(bundle)
         self.bundle = bundle
         self.nH = bundle.num_heads
         self.nU = bundle.num_layers * bundle.num_heads
@@ -119,17 +121,22 @@ class CoAblation:
         if position_mode not in ("all", "last", "full"):
             raise ValueError(f"position_mode must be 'all', 'last' or 'full', got {position_mode!r}")
         self.position_mode = position_mode
+        if project_last_only and position_mode != "last":
+            raise ValueError("project_last_only requires position_mode='last'")
+        self.project_last_only = project_last_only
         self._means = C.head_mean_vectors(bundle, self.seqs) if ablation_mode == "mean" else None
         # Bucket sequences by length so each bucket is one stacked [B, T] forward instead of B
         # per-sequence forwards (~B x speedup; rows are independent under the causal mask, so the
         # batched logits are numerically identical to the per-sequence loop).
         buckets: Dict[int, List[torch.Tensor]] = {}
         for ids in self.seqs:
-            buckets.setdefault(int(ids.shape[1]), []).append(ids.reshape(1, -1))
+            if ids.dim() != 2:
+                raise ValueError(f"each token tensor must have shape [batch, sequence], got {tuple(ids.shape)}")
+            buckets.setdefault(int(ids.shape[1]), []).append(ids)
         self.teacher: List[Dict[str, torch.Tensor]] = []
         for T in sorted(buckets):
             ids_b = torch.cat(buckets[T], dim=0)               # [B, T]
-            logits = self._slice(C._forward_logits(bundle, ids_b))
+            logits = self._slice(self._forward_logits(ids_b))
             # top-r by logit == top-r by prob (softmax is monotone); softmax over the gathered
             # top-r is exactly the renormalized full-softmax top-r, so this avoids materializing
             # a full-vocab softmax (critical for 256k-vocab models like Gemma-2).
@@ -140,9 +147,14 @@ class CoAblation:
             from .lnfreeze import LayerNormFreezer
             self._ln = LayerNormFreezer(bundle.model, mode=freeze_ln)
             for i, t in enumerate(self.teacher):
-                self._ln.record(i, lambda ids=t["ids"]: C._forward_logits(bundle, ids))
+                self._ln.record(i, lambda ids=t["ids"]: self._forward_logits(ids))
             # Replaying clean stats on a clean pass must be a no-op; fail loudly if it is not.
-            self._ln.verify(0, lambda ids=self.teacher[0]["ids"]: C._forward_logits(bundle, ids))
+            self._ln.verify(0, lambda ids=self.teacher[0]["ids"]: self._forward_logits(ids))
+
+    def _forward_logits(self, ids: torch.Tensor) -> torch.Tensor:
+        """Compute only the requested output positions at the vocabulary projection."""
+        keep = 1 if self.project_last_only else 0
+        return C._forward_logits(self.bundle, ids, logits_to_keep=keep)
 
     def _slice(self, logits: torch.Tensor) -> torch.Tensor:
         """Select the output positions the energy is measured over (see position_mode)."""
@@ -170,7 +182,7 @@ class CoAblation:
             for i, t in enumerate(self.teacher):
                 ln_handles = self._ln.hooks(i) if self._ln is not None else []
                 try:
-                    s = self._slice(C._forward_logits(self.bundle, t["ids"]))
+                    s = self._slice(self._forward_logits(t["ids"]))
                 finally:
                     for h in ln_handles:
                         h.remove()

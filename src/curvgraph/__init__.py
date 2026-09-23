@@ -20,7 +20,7 @@ from .coablation import CoAblation
 from ._core.config import load_config, model_config, validate_config
 from ._core.model import ModelBundle, load_model_bundle
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 __all__ = [
     "CoAblation",
     "ModelBundle",

@@ -2,12 +2,14 @@ models:
   # Public Hugging Face identifiers. Gated models require prior license acceptance.
   llama-3.1-8b:
     path: meta-llama/Meta-Llama-3.1-8B-Instruct
+    revision: 0e9e39f249a16976918f6564b8830bc894c89659
     family: llama
     torch_dtype: bfloat16
     device_map: auto
     cross_model_top_r: 4096
   qwen2.5-7b:
     path: Qwen/Qwen2.5-7B-Instruct
+    revision: a09a35458c702b33eeacc393d103063234e8bc28
     family: qwen
     torch_dtype: bfloat16
     device_map: auto
@@ -15,57 +17,68 @@ models:
   # GPT-2-small has documented head-level IOI circuit roles.
   gpt2-small:
     path: gpt2
+    revision: 607a30d783dfa663caf39e06633721c8d4cfcd7e
     family: gpt2
     torch_dtype: float32
     device_map: auto
   # Additional architectures used for held-out induction completion.
   gpt2-medium:
     path: gpt2-medium
+    revision: 6dcaa7a952f72f9298047fd5137cd6e4f05f41da
     family: gpt2
     torch_dtype: float32
     device_map: auto
   gpt2-large:
-    path: gpt2-large
+    path: openai-community/gpt2-large
+    revision: 32b71b12589c2f8d625668d2335a01cac3249519
     family: gpt2
     torch_dtype: float32
     device_map: auto
   pythia-160m:
     path: EleutherAI/pythia-160m
+    revision: 50f5173d932e8e61f858120bcb800b97af589f46
     family: neox
     torch_dtype: float32
     device_map: auto
   pythia-410m:
     path: EleutherAI/pythia-410m
+    revision: 9879c9b5f8bea9051dcb0e68dff21493d67e9d4f
     family: neox
     torch_dtype: float32
     device_map: auto
   pythia-1.4b:
     path: EleutherAI/pythia-1.4b
+    revision: fedc38a16eea3bd36a96b906d78d11d2ce18ed79
     family: neox
     torch_dtype: float32   # fp16 produces NaN affinities in the synergy normalization; fits in fp32
     device_map: auto
   gpt-neo-1.3b:
     path: EleutherAI/gpt-neo-1.3B
+    revision: dbe59a7f4a88d01d1ba9798d78dbe3fe038792c8
     family: gptneo
     torch_dtype: float32
     device_map: auto
   gemma-2-2b:
     path: google/gemma-2-2b
+    revision: c5ebcd40d208330abc697524c919956e692655cf
     family: gemma2
     torch_dtype: bfloat16   # Gemma-2 native; needs eager attn (logit soft-capping) -- set in runtime
     device_map: auto
   gemma-2-9b:
     path: google/gemma-2-9b
+    revision: 33c193028431c2fde6c6e51f29e6f17b60cbfac6
     family: gemma2
     torch_dtype: bfloat16
     device_map: auto
   llama-2-13b:
     path: meta-llama/Llama-2-13b-hf
+    revision: 5c31dfb671ce7cfe2d7bb7c04375e44c55e815b1
     family: llama
     torch_dtype: bfloat16
     device_map: auto
   olmo-2-7b:
     path: allenai/OLMo-2-1124-7B
+    revision: 7df9a82518afdecae4e8c026b27adccc8c1f0032
     family: olmo
     torch_dtype: bfloat16
     device_map: auto

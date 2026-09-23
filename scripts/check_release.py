@@ -2,6 +2,8 @@
 """Fail on common source-release mistakes without reading ignored artifacts."""
 from __future__ import annotations
 
+import json
+import math
 import re
 import subprocess
 import sys
@@ -58,6 +60,7 @@ def main() -> int:
         ROOT / "configs/model.yaml",
         ROOT / "src/curvgraph/coablation.py",
         ROOT / "experiments/paper/backup_recovery_full.py",
+        ROOT / "experiments/paper/conditional_gradient_contrast.py",
         ROOT / "experiments/paper/causal_freezing.py",
         ROOT / "experiments/paper/circuit_completion.py",
         ROOT / "experiments/paper/knockout_oracle_distance.py",
@@ -70,6 +73,44 @@ def main() -> int:
         ROOT / ".github/workflows/release-check.yml",
     ]
     failures.extend(f"missing required file: {p.relative_to(ROOT)}" for p in required if not p.is_file())
+
+    reference_path = ROOT / "results/reference_metrics.json"
+    if reference_path.is_file():
+        reference = json.loads(reference_path.read_text(encoding="utf-8"))
+        cross = reference.get("cross_model_completion", {})
+        protocol = cross.get("protocol", {})
+        expected_protocol = {
+            "n_detect": 32, "n_calib": 16, "n_eval": 64,
+            "sequence_length": 48, "n_primary": 4, "top_k": 10, "n_random": 5,
+        }
+        if reference.get("schema_version") != 3:
+            failures.append("results/reference_metrics.json: expected schema version 3")
+        if any(protocol.get(key) != value for key, value in expected_protocol.items()):
+            failures.append("results/reference_metrics.json: cross-model protocol is inconsistent")
+        order = cross.get("selector_order", [])
+        rows = cross.get("selectors", {})
+        if order != ["coax", "single_ablation", "coactivation", "atp",
+                     "atp_star_graddrop", "role_matched_own"] or len(rows) != 8:
+            failures.append("results/reference_metrics.json: incomplete cross-model table")
+        elif any(len(row) != len(order) for row in rows.values()):
+            failures.append("results/reference_metrics.json: malformed cross-model row")
+        else:
+            counts = cross.get("counts", {})
+            above_random = sum(row[0] > 1.0 for row in rows.values())
+            above_own = sum(row[0] > row[-1] for row in rows.values())
+            if counts.get("coax_above_random") != [above_random, len(rows)]:
+                failures.append("results/reference_metrics.json: above-random count is stale")
+            if counts.get("coax_above_role_matched_own") != [above_own, len(rows)]:
+                failures.append("results/reference_metrics.json: above-own count is stale")
+            families = [["pythia-160m", "pythia-410m", "pythia-1.4b"],
+                        ["gpt-neo-1.3b"], ["gemma-2-2b"], ["qwen2.5-7b"],
+                        ["olmo-2-7b"], ["llama-3.1-8b"]]
+            for column, name in enumerate(order):
+                macro = sum(sum(rows[m][column] for m in family) / len(family)
+                            for family in families) / len(families)
+                if not math.isclose(macro, cross.get("family_macro", {}).get(name, math.nan),
+                                    rel_tol=0.0, abs_tol=1e-12):
+                    failures.append(f"results/reference_metrics.json: stale family macro for {name}")
 
     if failures:
         print("Release check failed:")

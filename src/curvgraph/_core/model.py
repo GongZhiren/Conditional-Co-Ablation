@@ -42,12 +42,15 @@ def load_model_bundle(model_cfg: Dict[str, object], tokenizer_cfg: Dict[str, obj
     dtype = to_torch_dtype(str(model_cfg.get("torch_dtype", "bfloat16")))
     device_map = model_cfg.get("device_map", "auto")
     local_only = bool(model_cfg.get("local_files_only", False))
+    revision = model_cfg.get("revision")
     model_kwargs = {
         "dtype": dtype,
         "trust_remote_code": True,
         "device_map": device_map,
         "attn_implementation": "eager",
     }
+    if revision:
+        model_kwargs["revision"] = str(revision)
     if model_cfg.get("load_in_8bit", False):
         model_kwargs["load_in_8bit"] = True
 
@@ -56,6 +59,7 @@ def load_model_bundle(model_cfg: Dict[str, object], tokenizer_cfg: Dict[str, obj
         trust_remote_code=bool(tokenizer_cfg.get("trust_remote_code", True)),
         use_fast=bool(tokenizer_cfg.get("use_fast", True)),
         local_files_only=local_only,
+        revision=str(revision) if revision else None,
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token

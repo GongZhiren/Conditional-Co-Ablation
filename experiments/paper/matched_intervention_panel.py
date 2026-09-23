@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mechanism-matched hierarchical intervention panel from the paper."""
+"""Mechanism-matched hierarchical CoAx intervention panel from the paper."""
 from __future__ import annotations
 
 import argparse
@@ -14,7 +14,6 @@ from scipy.stats import spearmanr
 
 from curvgraph._core.config import load_config
 from curvgraph._core.model import bundle_device, load_model_bundle
-from curvgraph import baselines as B
 from curvgraph import circuits as C
 from curvgraph.coablation import CoAblation
 from curvgraph.patching import FreezeValidator, capture_head_activations, register_freeze
@@ -28,7 +27,7 @@ TEMPLATES = {
 PRIMARY_SETS = ["name_mover", "s_inhibition", "induction", "duplicate_token"]
 SEED_METRIC = {"name_mover": "ioi", "s_inhibition": "ioi",
                "induction": "induction", "duplicate_token": "induction"}
-METHODS = ["coax", "atpstar", "single", "eapig", "atp"]
+METHODS = ["coax"]
 
 
 def make_prompts(template: str, n: int, seed: int):
@@ -173,6 +172,12 @@ def main() -> None:
         if mismatched:
             raise ValueError("Cannot resume with changed protocol fields: " +
                              ", ".join(mismatched))
+        for key, row in list(report.get("instances", {}).items()):
+            methods = row.get("by_method", {})
+            if "coax" not in methods:
+                report["instances"].pop(key)
+                continue
+            row["by_method"] = {"coax": methods["coax"]}
         report.pop("summary", None)
     else:
         report = {"schema_version": 1, **protocol, "instances": {}}
@@ -189,23 +194,13 @@ def main() -> None:
         seqs = [bundle.tokenizer(e["prompt"], return_tensors="pt").to(dev)["input_ids"]
                 for e in calib]
         seqs = [s for s in seqs if s.shape[1] >= 4]
-        atp = B.head_attribution_patching(bundle, calib)
-        eap = B.integrated_gradient_attribution(bundle, calib)
-        atpstar = B.head_attribution_graddrop(bundle, calib)
-
         for pname in missing:
             primary = C.IOI_CIRCUIT[pname]
             prim_units = set(C.head_index(l, h, nH) for (l, h) in primary)
             cand = [u for u in range(nU) if u not in prim_units]
             co = CoAblation(bundle, seqs, top_r=top_r, position_mode=args.position_mode)
             comp = co.conditional_compensation(primary, head_set=list(range(nU)))
-            scores = {
-                "coax": np.array([comp["compensation"][u] for u in cand]),
-                "single": np.array([comp["single"][u] for u in cand]),
-                "atp": np.array([atp[u] for u in cand]),
-                "eapig": np.array([eap[u] for u in cand]),
-                "atpstar": np.array([atpstar[u] for u in cand]),
-            }
+            scores = {"coax": np.array([comp["compensation"][u] for u in cand])}
             scores = {k: np.nan_to_num(v, nan=0.0) for k, v in scores.items()}
 
             if SEED_METRIC[pname] == "ioi":

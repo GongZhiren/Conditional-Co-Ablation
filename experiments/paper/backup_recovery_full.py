@@ -3,7 +3,7 @@
 
 The JSON output stores per-head score vectors and summary metrics for reproducible analysis.
 
-  PYTHONPATH=src CUDA_VISIBLE_DEVICES=0 python scripts/run_backup_dump_main.py \
+  PYTHONPATH=src CUDA_VISIBLE_DEVICES=0 python experiments/paper/backup_recovery_full.py \
       --model-key gpt2-small --num-prompts 96 --seeds 1 8 15 22
 """
 from __future__ import annotations
@@ -24,13 +24,14 @@ from curvgraph import circuits as C
 from curvgraph import baselines as B
 from curvgraph.coablation import CoAblation
 
-        # Stable output-schema labels.
+# Stable output-schema labels.
 K_SINGLE = "single-ablation saliency (1st-order)"
 K_ATP = "ATP (1st-order grad)"
-K_GIM = "GIM-style cond. attribution (1st-order, fair adapt.)"
+K_COND_ATP = "conditional AtP (removed-state gradient control)"
 K_EAP = "EAP-IG (1st-order)"
 K_APS = "AtP* GradDrop (1st-order)"
 K_COND = "conditional energy (removed-state control)"
+K_RATIO = "conditional amplification ratio (normalized variant)"
 K_COAX = "conditional co-ablation (ours, 2nd-order)"
 
 
@@ -80,22 +81,27 @@ def main() -> None:
 
         co = CoAblation(bundle, seqs, top_r=top_r, position_mode=args.position_mode)
         r = co.conditional_compensation(prim_h, head_set=list(range(nU)))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = np.where(r["single"] > 0,
+                             r["conditional"] / np.maximum(r["single"], 1e-30),
+                             np.nan)
         scores = {
             "cand": [int(u) for u in cand],
             "y": y,
             K_SINGLE: [float(np.nan_to_num(r["single"][u])) for u in cand],
             K_COND: [float(np.nan_to_num(r["conditional"][u])) for u in cand],
+            K_RATIO: [float(np.nan_to_num(ratio[u])) for u in cand],
             K_COAX: [float(np.nan_to_num(r["compensation"][u])) for u in cand],
         }
         if not args.skip_grad:
             atp = B.head_attribution_patching(bundle, prompts)
             eap = B.integrated_gradient_attribution(bundle, prompts)
             aps = B.head_attribution_graddrop(bundle, prompts)
-            gim = B.conditional_attribution_patching(bundle, prompts, prim_h)
+            conditional_atp = B.conditional_attribution_patching(bundle, prompts, prim_h)
             scores.update({
                 K_ATP: [float(atp[u]) for u in cand],
                 K_EAP: [float(eap[u]) for u in cand],
-                K_GIM: [float(gim[u]) for u in cand],
+                K_COND_ATP: [float(conditional_atp[u]) for u in cand],
                 K_APS: [float(aps[u]) for u in cand],
             })
         aucs = {k: auc(v) for k, v in scores.items() if k not in ("cand", "y")}
@@ -124,8 +130,14 @@ def main() -> None:
         if not args.skip_grad:
             nm.update({K_ATP: nm_auc(atp), K_EAP: nm_auc(eap)})
 
-        base = {"model": args.model_key, "seed": sd,
+        base = {"schema_version": 3, "model": args.model_key, "seed": sd,
+                "num_prompts": args.num_prompts,
                 "position_mode": args.position_mode, "top_r": top_r,
+                "baseline_protocol": {
+                    "atp": "zero-ablation gradient x activation; per-example abs before dataset mean",
+                    "atpstar": "residual-contribution GradDrop; per-example abs; L-1 normalization",
+                    "eapig": "activation-space EAP-IG; per-layer zero baseline; 5 steps; signed dataset aggregation",
+                },
                 "backup_recovery_auc": aucs,
                 "backup_recovery_ranking_metrics": ranking_metrics,
                 "name_mover_recovery_auc": nm}
@@ -134,7 +146,8 @@ def main() -> None:
         Path(f"outputs/coablation/bc_dump_seed{sd}{args.suffix}.json").write_text(
             json.dumps({**base, "scores": scores}, indent=2), encoding="utf-8")
         display = {K_SINGLE: "single", K_COND: "conditional", K_COAX: "CoAx",
-                   K_ATP: "AtP", K_EAP: "EAP-IG", K_GIM: "conditional-grad",
+                   K_RATIO: "amplification-ratio",
+                   K_ATP: "AtP", K_EAP: "EAP-IG", K_COND_ATP: "conditional-grad",
                    K_APS: "AtP*"}
         print(f"[dump] seed={sd}  " + "  ".join(
             f"{display.get(k, k)}={v:.3f}" for k, v in aucs.items()), flush=True)

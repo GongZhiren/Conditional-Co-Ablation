@@ -92,6 +92,31 @@ def head_layer_head(idx: int, n_heads: int) -> Tuple[int, int]:
     return idx // n_heads, idx % n_heads
 
 
+def ensure_intervention_safe(bundle: ModelBundle) -> None:
+    """Reject Accelerate model sharding for hook-based activation interventions.
+
+    Forward hooks are reliable when the model is resident on one execution device.  With an
+    Accelerate ``hf_device_map`` spanning multiple devices, the dispatch wrappers can overwrite
+    hook-modified module inputs at shard boundaries, silently turning an ablation into a no-op.
+    The supported way to use several GPUs is therefore one model process per GPU.
+    """
+    device_map = getattr(bundle.model, "hf_device_map", None)
+    if not device_map:
+        return
+    locations = set()
+    for value in device_map.values():
+        if isinstance(value, int):
+            locations.add(f"cuda:{value}")
+        else:
+            locations.add(str(value))
+    if len(locations) > 1 or any(value in {"disk", "meta"} for value in locations):
+        raise RuntimeError(
+            "Hook-based head interventions require the model to reside on one device; "
+            "set CUDA_VISIBLE_DEVICES to a single GPU. To use multiple GPUs, run independent "
+            "model jobs in parallel instead of sharding one model."
+        )
+
+
 def register_head_ablation(bundle: ModelBundle, layer_idx: int, head_idx: int,
                            replacement: Optional[torch.Tensor] = None):
     """Ablate one head by overwriting its slice of the attention-output-projection input.
@@ -99,6 +124,7 @@ def register_head_ablation(bundle: ModelBundle, layer_idx: int, head_idx: int,
     vector, broadcast over batch/positions) -- e.g. the head's mean activation (mean ablation,
     the expectation of resample ablation). Robustness to this choice defuses Miller et al.
     (2407.08734), which shows faithfulness is sensitive to the ablation value."""
+    ensure_intervention_safe(bundle)
     layer = layer_modules(bundle)[layer_idx]
     attn = _attn_module(layer)
     cproj = _cproj(attn)
@@ -130,7 +156,7 @@ def head_mean_vectors(bundle: ModelBundle, seqs: Sequence[torch.Tensor]) -> Dict
     nH, hd = bundle.num_heads, bundle.head_dim
     layers = layer_modules(bundle)
     sums = {(li, hi): None for li in range(bundle.num_layers) for hi in range(nH)}
-    count = [0]
+    counts = [0 for _ in range(bundle.num_layers)]
     handles = []
 
     def mk(li):
@@ -139,7 +165,7 @@ def head_mean_vectors(bundle: ModelBundle, seqs: Sequence[torch.Tensor]) -> Dict
             if x.dim() != 3:
                 return
             flat = x.reshape(-1, x.shape[-1])
-            count[0] += flat.shape[0]
+            counts[li] += flat.shape[0]
             for hi in range(nH):
                 s = flat[:, hi * hd:(hi + 1) * hd].sum(0).float().cpu()
                 sums[(li, hi)] = s if sums[(li, hi)] is None else sums[(li, hi)] + s
@@ -155,8 +181,7 @@ def head_mean_vectors(bundle: ModelBundle, seqs: Sequence[torch.Tensor]) -> Dict
     finally:
         for h in handles:
             h.remove()
-    n = max(1, count[0])
-    return {k: (v / n) for k, v in sums.items() if v is not None}
+    return {k: (v / max(1, counts[k[0]])) for k, v in sums.items() if v is not None}
 
 
 def register_heads_ablation(bundle: ModelBundle, heads: Sequence[Tuple[int, int]],
@@ -171,6 +196,7 @@ def register_heads_ablation_grouped(bundle: ModelBundle, heads: Sequence[Tuple[i
     instead of one hook per head. Equivalent output to register_heads_ablation(replacements=None)
     but O(#layers) hooks instead of O(#heads) -- critical for sequential pruning where the
     conditioning set grows to hundreds of heads. Returns handles to remove."""
+    ensure_intervention_safe(bundle)
     hd = bundle.head_dim
     by_layer: Dict[int, list] = {}
     for (l, h) in heads:
@@ -201,9 +227,13 @@ def register_heads_ablation_grouped(bundle: ModelBundle, heads: Sequence[Tuple[i
     return handles
 
 
-def _forward_logits(bundle: ModelBundle, input_ids: torch.Tensor) -> torch.Tensor:
+def _forward_logits(bundle: ModelBundle, input_ids: torch.Tensor,
+                    logits_to_keep: int = 0) -> torch.Tensor:
     with torch.no_grad():
-        out = bundle.model(input_ids=input_ids, use_cache=False)
+        kwargs = {"input_ids": input_ids, "use_cache": False}
+        if logits_to_keep:
+            kwargs["logits_to_keep"] = logits_to_keep
+        out = bundle.model(**kwargs)
     return out.logits
 
 
@@ -336,7 +366,7 @@ def induction_scores(
             for p in range(seq_len + 1, 2 * seq_len):
                 tgt = p - seq_len + 1
                 acc[li] += a[:, p, tgt].float().cpu().numpy()
-        count += (2 * seq_len - 1) - (seq_len + 1)
+        count += seq_len - 1
     scores = acc / max(1, count)
     return scores.reshape(-1)  # [n_layers*n_heads]
 

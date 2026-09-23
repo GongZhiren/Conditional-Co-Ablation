@@ -17,6 +17,7 @@ avoiding parameter-gradient buffers without changing the attribution scores.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -29,21 +30,26 @@ from curvgraph import circuits as C
 from curvgraph.coablation import CoAblation
 from curvgraph import baselines as B
 
-def induction_metric(bundle, seqs, seq_len, ablate_heads=None):
+def induction_metric(bundle, seqs, seq_len, ablate_heads=None, batch_size=4):
     """Mean log-probability of the copied token at second-copy positions."""
     handles = C.register_heads_ablation_grouped(bundle, ablate_heads) if ablate_heads else []
-    values = []
+    total = 0.0
+    count = 0
     try:
-        for ids in seqs:
-            logits = C._forward_logits(bundle, ids)[0]
-            log_probs = torch.log_softmax(logits.float(), dim=-1)
-            tokens = ids[0]
-            for pos in range(seq_len, 2 * seq_len - 1):
-                values.append(float(log_probs[pos, int(tokens[pos + 1])]))
+        for start in range(0, len(seqs), max(1, batch_size)):
+            ids = torch.cat(seqs[start:start + max(1, batch_size)], dim=0)
+            logits = C._forward_logits(bundle, ids)
+            log_probs = torch.log_softmax(
+                logits[:, seq_len:2 * seq_len - 1].float(), dim=-1
+            )
+            targets = ids[:, seq_len + 1:2 * seq_len]
+            selected = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+            total += float(selected.sum())
+            count += selected.numel()
     finally:
         for handle in handles:
             handle.remove()
-    return float(np.mean(values)) if values else 0.0
+    return total / count if count else 0.0
 
 
 def induction_logprob_metric(bundle, seq_len):
@@ -51,10 +57,10 @@ def induction_logprob_metric(bundle, seq_len):
     def metric(bundle_, example):
         ids = example["ids"]
         outputs = bundle_.model(input_ids=ids, use_cache=False)
-        log_probs = torch.log_softmax(outputs.logits[0].float(), dim=-1)
-        tokens = ids[0]
-        positions = range(seq_len, ids.shape[1] - 1)
-        return torch.stack([log_probs[pos, tokens[pos + 1]] for pos in positions]).mean()
+        log_probs = torch.log_softmax(outputs.logits[:, seq_len:-1].float(), dim=-1)
+        targets = ids[:, seq_len + 1:]
+        per_example = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1).mean(dim=1)
+        return per_example.sum()
 
     return metric
 
@@ -96,6 +102,24 @@ def _head_activation_matrix(bundle, seqs):
                      for u in range(n_units)])
 
 
+def model_fingerprint(model) -> str:
+    """Stable lightweight checkpoint fingerprint for safe score-cache reuse."""
+    digest = hashlib.sha256()
+    digest.update(json.dumps(model.config.to_dict(), sort_keys=True, default=str).encode())
+    for name, parameter in model.named_parameters():
+        flat = parameter.detach().reshape(-1)
+        digest.update(name.encode())
+        digest.update(str(tuple(parameter.shape)).encode())
+        digest.update(str(parameter.dtype).encode())
+        if flat.numel():
+            steps = min(17, flat.numel())
+            indices = torch.arange(steps, device=flat.device, dtype=torch.long)
+            if steps > 1:
+                indices = indices * (flat.numel() - 1) // (steps - 1)
+            digest.update(flat.index_select(0, indices).float().cpu().numpy().tobytes())
+    return digest.hexdigest()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/default.yaml")
@@ -106,6 +130,10 @@ def main() -> None:
     ap.add_argument("--n-detect", type=int, default=32)
     ap.add_argument("--n-calib", type=int, default=16, help="identical budget for every selector")
     ap.add_argument("--n-eval", type=int, default=64, help="held-out completion evaluation")
+    ap.add_argument("--eval-batch-size", type=int, default=4,
+                    help="forward-only held-out evaluation batch size")
+    ap.add_argument("--gradient-batch-size", type=int, default=2,
+                    help="calibration batch size for AtP and AtP* backward passes")
     ap.add_argument("--seed-detect", type=int, default=101)
     ap.add_argument("--seed-calib", type=int, default=202)
     ap.add_argument("--seed-eval", type=int, default=303)
@@ -115,6 +143,10 @@ def main() -> None:
     ap.add_argument("--top-r", type=int, default=None,
                     help="fixed clean support; default comes from configs/model.yaml (0 = full)")
     ap.add_argument("--skip-grad", action="store_true")
+    ap.add_argument("--base-scores-from", default=None,
+                    help="reuse a compatible artifact's non-gradient calibration scores")
+    ap.add_argument("--project-last-only", action="store_true",
+                    help="ask the LM head to project only the scored final position")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
@@ -126,6 +158,8 @@ def main() -> None:
                                cfg["model"].get("tokenizer", {}))
     bundle.model.requires_grad_(False)
     bundle.model.enable_input_require_grads()
+    C.ensure_intervention_safe(bundle)
+    checkpoint_fingerprint = model_fingerprint(bundle.model)
     nH = bundle.num_heads
     nU = bundle.num_layers * nH
     lh = lambda u: C.head_layer_head(int(u), nH)
@@ -133,7 +167,8 @@ def main() -> None:
                                                         seq_len=args.seq_len, seed=sd)
 
     # ---- 1. DETECT: the primary set, on its own sequences ---------------------------------------
-    isc = C.induction_scores(bundle, num_sequences=args.n_detect, seed=args.seed_detect)
+    isc = C.induction_scores(bundle, num_sequences=args.n_detect, seq_len=args.seq_len,
+                             seed=args.seed_detect)
     if args.model_key == "gpt2-small":
         primaries = [tuple(x) for x in C.IOI_CIRCUIT["induction"]]
         prim_u = [C.head_index(l, h, nH) for (l, h) in primaries]
@@ -148,48 +183,90 @@ def main() -> None:
     configured_top_r = int(model_spec.get("cross_model_top_r", 0))
     requested_top_r = configured_top_r if args.top_r is None else args.top_r
     top_r = requested_top_r or int(bundle.tokenizer.vocab_size)
-    co = CoAblation(bundle, cal, top_r=top_r, position_mode="last")
-    r = co.conditional_compensation(primaries, head_set=list(range(nU)))
-    single, cond = r["single"], r["conditional"]
-    with np.errstate(divide="ignore", invalid="ignore"):
-        ratio = np.where(single > 0, cond / np.maximum(single, 1e-30), np.nan)
-    scores = {"coax": r["compensation"], "cond_energy": cond, "ratio": ratio,
-              "coupling": r["coupling"], "intact": single}
+    base_names = ("coax", "cond_energy", "ratio", "coupling", "intact", "coact")
+    if args.base_scores_from:
+        cached = json.loads(Path(args.base_scores_from).read_text(encoding="utf-8"))
+        expected_protocol = {
+            "n_detect": args.n_detect, "n_calib": args.n_calib,
+            "seed_detect": args.seed_detect, "seed_calib": args.seed_calib,
+            "seq_len": args.seq_len, "top_r": top_r,
+            "project_last_only": args.project_last_only,
+        }
+        if cached.get("model") != args.model_key:
+            raise ValueError("base-score artifact model does not match --model-key")
+        if cached.get("model_fingerprint") != checkpoint_fingerprint:
+            raise ValueError("base-score artifact checkpoint fingerprint does not match")
+        if cached.get("primaries") != [list(map(int, p)) for p in primaries]:
+            raise ValueError("base-score artifact primary set does not match this run")
+        for key, value in expected_protocol.items():
+            if cached.get("protocol", {}).get(key) != value:
+                raise ValueError(f"base-score artifact protocol mismatch for {key}")
+        if any(name not in cached.get("scores", {}) for name in base_names):
+            raise ValueError("base-score artifact is missing a required non-gradient selector")
+        scores = {
+            name: np.array([np.nan if value is None else float(value)
+                            for value in cached["scores"][name]], dtype=np.float64)
+            for name in base_names
+        }
+        if any(values.shape != (nU,) for values in scores.values()):
+            raise ValueError("base-score artifact has the wrong number of heads")
+        print(f"[fair] reused compatible non-gradient scores from {args.base_scores_from}",
+              flush=True)
+    else:
+        co = CoAblation(bundle, cal, top_r=top_r, position_mode="last",
+                        project_last_only=args.project_last_only)
+        r = co.conditional_compensation(primaries, head_set=list(range(nU)))
+        single, cond = r["single"], r["conditional"]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = np.where(single > 0, cond / np.maximum(single, 1e-30), np.nan)
+        scores = {"coax": r["compensation"], "cond_energy": cond, "ratio": ratio,
+                  "coupling": r["coupling"], "intact": single}
 
-    act = _head_activation_matrix(bundle, cal)
-    Z = (act - act.mean(1, keepdims=True)) / np.maximum(act.std(1, keepdims=True), 1e-9)
-    corr = (Z @ Z.T) / max(1, Z.shape[1])
-    scores["coact"] = np.array([np.nanmean([abs(corr[u, p]) for p in prim_u])
-                                if u in cand else np.nan for u in range(nU)])
+        act = _head_activation_matrix(bundle, cal)
+        Z = (act - act.mean(1, keepdims=True)) / np.maximum(act.std(1, keepdims=True), 1e-9)
+        corr = (Z @ Z.T) / max(1, Z.shape[1])
+
+        def coactivation_score(u):
+            values = [abs(corr[u, p]) for p in prim_u if np.isfinite(corr[u, p])]
+            return float(np.mean(values)) if values else np.nan
+
+        scores["coact"] = np.array([coactivation_score(u) if u in cand else np.nan
+                                    for u in range(nU)])
 
     if not args.skip_grad:
         met = induction_logprob_metric(bundle, args.seq_len)
-        gp = [{"ids": s} for s in cal]                      # the SAME calibration sequences
+        grad_bs = max(1, args.gradient_batch_size)
+        gp = [{"ids": torch.cat(cal[start:start + grad_bs], dim=0)}
+              for start in range(0, len(cal), grad_bs)]       # the SAME calibration sequences
         scores["atp"] = B.head_attribution_patching(bundle, gp, metric=met)
-        print(f"[fair] ATP done on {len(gp)} calibration sequences", flush=True)
+        print(f"[fair] ATP done on {len(cal)} calibration sequences", flush=True)
         scores["atpstar"] = B.head_attribution_graddrop(bundle, gp, metric=met)
-        print(f"[fair] AtP* done on {len(gp)} calibration sequences", flush=True)
+        print(f"[fair] AtP* done on {len(cal)} calibration sequences", flush=True)
 
     # ---- 3. EVALUATE: held-out sequences, never seen by any selector ------------------------------
     ev = seqs_of(args.n_eval, args.seed_eval)
-    clean = induction_metric(bundle, ev, args.seq_len)
-    m_prim = induction_metric(bundle, ev, args.seq_len, ablate_heads=primaries)
+    clean = induction_metric(bundle, ev, args.seq_len, batch_size=args.eval_batch_size)
+    m_prim = induction_metric(bundle, ev, args.seq_len, ablate_heads=primaries,
+                              batch_size=args.eval_batch_size)
     drop_prim = clean - m_prim
     print(f"[fair] {args.model_key}  clean={clean:.4f}  primaries={[list(p) for p in primaries]}  "
           f"primary-only drop={drop_prim:.4f}  (detect {args.n_detect} / calib {args.n_calib} / "
           f"eval {args.n_eval} sequences, disjoint)", flush=True)
 
     def completion(units):
-        return float(clean - induction_metric(bundle, ev, args.seq_len,
-                                              ablate_heads=primaries + [lh(u) for u in units]))
+        return float(clean - induction_metric(
+            bundle, ev, args.seq_len,
+            ablate_heads=primaries + [lh(u) for u in units],
+            batch_size=args.eval_batch_size,
+        ))
 
-    rng = np.random.default_rng(args.seed_eval)
     order = {n: sorted(cand, key=lambda u: -(s[u] if np.isfinite(s[u]) else -np.inf))
              for n, s in scores.items()}
     own_all = [int(u) for u in np.argsort(isc)[::-1] if u not in prim_set]
 
     out = {"by_k": {}}
     for k in args.topk:
+        rng = np.random.default_rng(np.random.SeedSequence([args.seed_eval, int(k)]))
         rnd = [completion(list(rng.choice(cand, size=k, replace=False)))
                for _ in range(args.n_random)]
         row = {"random": {"drop": float(np.mean(rnd)), "drop_std": float(np.std(rnd))},
@@ -211,11 +288,16 @@ def main() -> None:
     dest = args.out or f"outputs/coablation/complfair_{args.model_key}.json"
     Path(dest).parent.mkdir(parents=True, exist_ok=True)
     Path(dest).write_text(json.dumps(
-        {"model": args.model_key, "protocol": {
+        {"model": args.model_key, "model_fingerprint": checkpoint_fingerprint, "protocol": {
             "n_detect": args.n_detect, "n_calib": args.n_calib, "n_eval": args.n_eval,
             "seed_detect": args.seed_detect, "seed_calib": args.seed_calib,
-            "seed_eval": args.seed_eval, "seq_len": args.seq_len, "top_r": top_r,
+            "seed_eval": args.seed_eval, "seq_len": args.seq_len,
+            "eval_batch_size": args.eval_batch_size,
+            "gradient_batch_size": args.gradient_batch_size,
+            "n_random": args.n_random, "top_r": top_r,
             "top_r_approximation": requested_top_r > 0,
+            "base_scores_reused": bool(args.base_scores_from),
+            "project_last_only": args.project_last_only,
             "uniform_calibration_budget": True, "splits_disjoint": True},
          "primaries": [list(map(int, p)) for p in primaries],
          "clean": clean, "primary_only_drop": drop_prim,

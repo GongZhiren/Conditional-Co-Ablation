@@ -10,22 +10,24 @@ dormant components that become load-bearing under intervention.**
 
 <table>
   <tr>
-    <td align="center">
-      <a href="https://arxiv.org/abs/2607.01940"><strong>📄 Read the paper</strong></a><br>
-      <sub>Method, analysis, and full experiments</sub>
-    </td>
-    <td align="center">
-      <a href="https://gongzhiren.github.io/Conditional-Co-Ablation-website/"><strong>🌐 Explore the project</strong></a><br>
-      <sub>Visual results and the CoAx story</sub>
-    </td>
-    <td align="center">
-      <a href="https://gongzhiren.github.io/Conditional-Co-Ablation-website/#tutorial"><strong>▶ Watch the tutorial</strong></a><br>
-      <sub>A narrated 4½-minute walkthrough</sub>
-    </td>
-    <td align="center">
-      <a href="https://colab.research.google.com/github/GongZhiren/Conditional-Co-Ablation/blob/main/notebooks/coax_quickstart.ipynb"><strong>🚀 Try CoAx</strong></a><br>
-      <sub>Run the visual quickstart in Colab</sub>
-    </td>
+    <td><strong>📄 Paper</strong></td>
+    <td>Method, analysis, and full experiments</td>
+    <td><a href="https://arxiv.org/abs/2607.01940"><strong>Read the paper →</strong></a></td>
+  </tr>
+  <tr>
+    <td><strong>🌐 Project</strong></td>
+    <td>Visual results and the CoAx story</td>
+    <td><a href="https://gongzhiren.github.io/Conditional-Co-Ablation-website/"><strong>Explore the project →</strong></a></td>
+  </tr>
+  <tr>
+    <td><strong>▶ Tutorial</strong></td>
+    <td>A narrated 3½-minute walkthrough</td>
+    <td><a href="https://gongzhiren.github.io/Conditional-Co-Ablation-website/#tutorial"><strong>Watch the tutorial →</strong></a></td>
+  </tr>
+  <tr>
+    <td><strong>🚀 Colab</strong></td>
+    <td>Run the visual quickstart without local setup</td>
+    <td><a href="https://colab.research.google.com/github/GongZhiren/Conditional-Co-Ablation/blob/main/notebooks/coax_quickstart.ipynb"><strong>Try CoAx →</strong></a></td>
   </tr>
 </table>
 
@@ -46,14 +48,15 @@ dormant components that become load-bearing under intervention.**
 
 ## News
 
-- **August 2026 — expanded CoAx and experiments.** We further developed CoAx
-  with causal freezing, circuit completion and knockout, mechanism-matched
-  intervention panels, and held-out completion across model families. See the
-  latest [arXiv version](https://arxiv.org/abs/2607.01940) for the full study.
-- **August 2026 — improved open-source implementation.** The codebase now offers
-  a cleaner installable package, a guided visual quickstart, portable public
-  model configuration, structured experiment artifacts, resumable long runs,
-  and streamlined reproduction commands.
+- **September 2026 — expanded CoAx and experiments.** We further developed CoAx
+  with deeper causal validation, circuit completion and knockout,
+  mechanism-matched intervention panels, and held-out completion across model
+  families. See the latest [arXiv version](https://arxiv.org/abs/2607.01940)
+  for the full study.
+- **September 2026 — improved open-source implementation.** The codebase now
+  offers an installable package, a guided visual quickstart, portable model
+  configuration, structured artifacts, resumable long runs, and streamlined
+  reproduction commands.
 - **July 2026 — initial release.** Reference implementation for the first arXiv
   version.
 
@@ -142,19 +145,28 @@ backup branch over intact-state and removed-state alternatives:
 
 | Selector | Backup ROC-AUC |
 |---|---:|
-| **CoAx** | **0.941 ± 0.004** |
-| AtP\* GradDrop | 0.815 ± 0.031 |
+| **CoAx signed growth** | **0.941 ± 0.004** |
+| Conditional gradient | 0.767 ± 0.005 |
 | Conditional energy | 0.758 ± 0.004 |
-| EAP-IG | 0.700 ± 0.020 |
+| AtP\* GradDrop | 0.665 ± 0.009 |
+| AtP | 0.650 ± 0.010 |
 | Single ablation | 0.603 ± 0.007 |
+| Activation-space EAP-IG | 0.581 ± 0.027 |
 
-The same label-free selection is causally load-bearing: freezing the selected
-heads causes an IOI-margin loss of `0.90 ± 0.07`. Used as a circuit completion,
-it reduces incompleteness from `0.755 ± 0.074` to `0.205 ± 0.030`; its knockout
-also gives the closest general-selector match to the documented backup
-intervention. Across the mechanism-matched panel, CoAx is positive in `11/12`
+An auxiliary normalized CoAx variant reaches `0.984 ± 0.001`; it is included in
+the component analysis rather than treated as a separate baseline. Signed
+growth remains the method's default because it has the exact interaction
+decomposition developed in the paper, transfers directly across mechanisms,
+and avoids division by near-zero intact effects. Its label-free selection is causally load-bearing: freezing the
+selected heads causes an IOI-margin loss of `0.90 ± 0.07`. Used as a circuit
+completion, it reduces incompleteness from `0.474 ± 0.030` to `0.236 ± 0.037`;
+its knockout closely matches the documented backup intervention. Across the
+mechanism-matched panel, CoAx is positive in `11/12`
 instances and all `4/4` mechanism clusters, with macro Spearman `0.123` and a
-nested 95% interval of `[0.047, 0.201]`. Machine-readable paper values and exact commands live in
+nested 95% interval of `[0.047, 0.201]`. Under held-out, equal-budget circuit
+completion, CoAx exceeds a size-matched random completion on all `8/8`
+non-GPT-2 models and the role-matched next induction heads on `5/8`, with a
+`6.70×` family-macro gain over random. Machine-readable paper values and exact commands live in
 [`results/reference_metrics.json`](results/reference_metrics.json).
 
 ## Reproducing the core paper results
@@ -167,6 +179,7 @@ are written under `outputs/coablation/` and are ignored by Git.
 | Target | Result produced | Default scale |
 |---|---|---|
 | `make headline` | backup recovery and principal baselines | GPT-2-small, 4 × 96 prompts |
+| `make conditional` | two-state AtP and AtP* controls | GPT-2-small, 4 × 96 prompts |
 | `make mechanism` | graded wake-up and DLA hand-off | GPT-2-small, 4 × 96 prompts |
 | `make causal` | activation-freezing causal validation | GPT-2-small, 4 × 96 prompts |
 | `make completion` | raw-ranking circuit completion | GPT-2-small, 4 × 96 prompts |
@@ -184,8 +197,18 @@ python experiments/paper/backup_recovery_full.py \
 
 This produces the per-head rankings and baseline metrics used for the headline
 backup-recovery table. `--top-r 0` means full vocabulary. The headline values
-are CoAx ROC-AUC `0.941 ± 0.004`, single-ablation `0.603 ± 0.007`,
-conditional energy `0.758 ± 0.004`, and AtP* GradDrop `0.815 ± 0.031`.
+are CoAx signed-growth ROC-AUC `0.941 ± 0.004`, conditional energy
+`0.758 ± 0.004`, AtP* GradDrop
+`0.665 ± 0.009`, and single ablation `0.603 ± 0.007`.
+The same artifact also reports the auxiliary normalized variant used in the
+paper's component analysis.
+
+The strongest matched gradient control applies the same two-state contrast to
+AtP* GradDrop. After `make headline`, run `make conditional`; validated headline
+artifacts are reused, and the conditional AtP* contrast reaches
+`0.938 ± 0.004` ROC-AUC. This supports the importance of conditioning while
+separating CoAx's exact finite, full-distribution intervention score from a
+task-gradient local approximation.
 
 ### 2. Causal hand-off and freezing
 
@@ -230,7 +253,7 @@ instance; rerunning the same command resumes safely after interruption.
 ### 5. Held-out cross-model generalization
 
 ```bash
-python experiments/paper/cross_model_completion.py \
+CUDA_VISIBLE_DEVICES=0 python experiments/paper/cross_model_completion.py \
   --model-key pythia-410m --n-detect 32 --n-calib 16 --n-eval 64 --topk 10
 ```
 
@@ -263,7 +286,7 @@ sequences and do not apply a chat template.
 |---|---|---|---:|
 | `gpt2-small` | `gpt2` | float32 | full vocabulary |
 | `gpt2-medium` | `gpt2-medium` | float32 | full vocabulary |
-| `gpt2-large` | `gpt2-large` | float32 | full vocabulary |
+| `gpt2-large` | `openai-community/gpt2-large` | float32 | full vocabulary |
 | `pythia-160m` | `EleutherAI/pythia-160m` | float32 | full vocabulary |
 | `pythia-410m` | `EleutherAI/pythia-410m` | float32 | full vocabulary |
 | `pythia-1.4b` | `EleutherAI/pythia-1.4b` | float32 | full vocabulary |
@@ -320,6 +343,7 @@ generation, candidate exclusions, controls, seeds, and evaluation labels.
 |---|---|---|
 | Checkpoint download or gated-model error | Network access or an unaccepted model license | Run `hf auth login`, accept the checkpoint license, or pass a local mirror with `--model-path` |
 | CUDA out of memory | The prompt batch or vocabulary support is too large | Reduce prompts for a smoke test or use a positive `--top-r`; do not compare that approximation with full-vocabulary paper values |
+| A model is split across GPUs | Accelerate module dispatch is not safe for activation-intervention hooks | Expose one GPU per process with `CUDA_VISIBLE_DEVICES=<id>`; use multiple GPUs for independent model jobs |
 | Results differ slightly | CUDA kernels, package versions, or checkpoint revisions differ | Use `requirements-tested.txt`, retain artifact metadata, and compare rounded aggregate metrics |
 | Gradient baselines are unexpectedly slow | AtP/EAP baselines require backward passes | Use `--skip-grad` only for a fast CoAx check; omit it for the complete paper comparison |
 | A head ID looks wrong | Flattened IDs use the model's own head count | Convert with `layer = id // num_heads` and `head = id % num_heads` |
@@ -344,7 +368,7 @@ logs, manuscript sources, internal diagnostics, and submission materials.
 ```bibtex
 @misc{gong2026conditional,
   title         = {Conditional Co-Ablation: Recovering Self-Repair Backups in Transformer Circuits},
-  author        = {Gong, Zhiren and Zeng, Zihao and Wang, Yixin and Lu, He and Zhang, Yichi and Xiao, Ming and Yuen, Chau and Lim, Wei Yang Bryan},
+  author        = {Gong, Zhiren and Lu, He and Wang, Tiantong and Zhang, Yichi and Wang, Yixin and Zeng, Zihao and Xiao, Ming and Yuen, Chau and Lim, Wei Yang Bryan},
   year          = {2026},
   eprint        = {2607.01940},
   archivePrefix = {arXiv},

@@ -18,7 +18,7 @@ For every selector we ablate primaries + its top-k set and measure
 If CoAx sits closest to the oracle on the first two and the first-order top-up is far on all of
 them, the experiment supports 'removes the right components', which 'accuracy fell less' does not.
 
-  PYTHONPATH=src CUDA_VISIBLE_DEVICES=0 python scripts/run_knockout_oracle_distance.py \
+  PYTHONPATH=src CUDA_VISIBLE_DEVICES=0 python experiments/paper/knockout_oracle_distance.py \
       --model-key gpt2-small --num-prompts 96 --seeds 1 15 22 8
 """
 from __future__ import annotations
@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -38,6 +39,7 @@ from curvgraph._core.model import load_model_bundle, bundle_device
 from curvgraph import circuits as C
 from curvgraph import baselines as B
 from curvgraph.coablation import CoAblation, coactivation_affinity
+from curvgraph.artifacts import load_headline_vectors
 
 UNRELATED = [
     "The capital of France is a city that has long been",
@@ -58,6 +60,12 @@ def main() -> None:
     ap.add_argument("--num-prompts", type=int, default=96)
     ap.add_argument("--seeds", type=int, nargs="+", default=[1, 15, 22, 8])
     ap.add_argument("--topk", type=int, default=8)
+    ap.add_argument("--random-draws", type=int, default=20)
+    ap.add_argument("--bootstrap", type=int, default=10000)
+    ap.add_argument("--bootstrap-seed", type=int, default=0)
+    ap.add_argument("--headline-dump-template",
+                    default="outputs/coablation/bc_dump_seed{seed}.json",
+                    help="validated score cache from the headline run; recomputed if absent/mismatched")
     ap.add_argument("--out", default="outputs/coablation/knockout_oracle_distance.json")
     args = ap.parse_args()
 
@@ -79,92 +87,146 @@ def main() -> None:
         return C.head_layer_head(int(u), nH)
 
     def answer_probs(prompts, ablate):
-        """Final-position distribution on each prompt, under an ablation."""
+        """Final-position log distributions, batched by tokenized length."""
+        records = []
+        for index, example in enumerate(prompts):
+            text = example["prompt"] if isinstance(example, dict) else example
+            ids = bundle.tokenizer(text, return_tensors="pt")["input_ids"]
+            records.append((index, ids))
         handles = C.register_heads_ablation_grouped(bundle, ablate) if ablate else []
         try:
-            out = []
-            for e in prompts:
-                ids = bundle.tokenizer(e["prompt"] if isinstance(e, dict) else e,
-                                       return_tensors="pt").to(dev)["input_ids"]
-                lg = C._forward_logits(bundle, ids)[0, -1, :].float()
-                out.append(torch.log_softmax(lg, dim=-1))
+            out = [None] * len(records)
+            groups = defaultdict(list)
+            for record in records:
+                groups[record[1].shape[1]].append(record)
+            with torch.no_grad():
+                for items in groups.values():
+                    ids = torch.cat([item[1] for item in items], dim=0).to(dev)
+                    lp = torch.log_softmax(C._forward_logits(bundle, ids)[:, -1, :].float(), dim=-1)
+                    for item, value in zip(items, lp.cpu()):
+                        out[item[0]] = value
             return out
         finally:
             for h in handles:
                 h.remove()
 
-    def acc_and_ld(prompts, ablate):
-        handles = C.register_heads_ablation_grouped(bundle, ablate) if ablate else []
-        try:
-            hits, diffs = [], []
-            for e in prompts:
-                ids = bundle.tokenizer(e["prompt"], return_tensors="pt").to(dev)["input_ids"]
-                lg = C._forward_logits(bundle, ids)[0, -1, :]
-                io = bundle.tokenizer(e["io"], add_special_tokens=False)["input_ids"][0]
-                s = bundle.tokenizer(e["s"], add_special_tokens=False)["input_ids"][0]
-                diffs.append(float(lg[io] - lg[s]))
-                hits.append(1.0 if float(lg[io]) > float(lg[s]) else 0.0)
-            return float(np.mean(hits)), float(np.mean(diffs)), diffs
-        finally:
-            for h in handles:
-                h.remove()
+    def acc_and_ld(prompts, log_probs):
+        diffs = []
+        for example, lp in zip(prompts, log_probs):
+            io = bundle.tokenizer(example["io"], add_special_tokens=False)["input_ids"][0]
+            subject = bundle.tokenizer(example["s"], add_special_tokens=False)["input_ids"][0]
+            diffs.append(float(lp[io] - lp[subject]))
+        return float(np.mean(np.asarray(diffs) > 0)), float(np.mean(diffs)), diffs
 
-    report = {"model": args.model_key, "topk": args.topk, "by_seed": {}}
+    report = {"model": args.model_key, "topk": args.topk,
+              "random_draws": args.random_draws, "bootstrap": args.bootstrap,
+              "bootstrap_seed": args.bootstrap_seed, "by_seed": {}}
     for pseed in args.seeds:
         prompts = C.ioi_prompts(args.num_prompts, seed=pseed)
         seqs = [bundle.tokenizer(e["prompt"], return_tensors="pt").to(dev)["input_ids"]
                 for e in prompts]
         seqs = [s for s in seqs if s.shape[1] >= 4]
-        co = CoAblation(bundle, seqs, top_r=V, position_mode="last")
-        r = co.conditional_compensation(primary, head_set=list(range(nU)))
-        aps = B.head_attribution_graddrop(bundle, prompts)
+        cached = load_headline_vectors(
+            args.headline_dump_template.format(seed=pseed), model=args.model_key, seed=pseed,
+            num_prompts=args.num_prompts, position_mode="last", top_r=V, num_units=nU,
+        )
+        if cached is None:
+            co = CoAblation(bundle, seqs, top_r=V, position_mode="last")
+            r = co.conditional_compensation(primary, head_set=list(range(nU)))
+            aps = B.head_attribution_graddrop(bundle, prompts)
+        else:
+            print(f"[ko] seed={pseed} reusing validated headline scores", flush=True)
+            r = cached
+            aps = cached["atpstar"]
         # input-side co-activation, ranked exactly as in the backup-AUC comparison: mean |corr|
         # of each candidate with the primaries
         A_act = coactivation_affinity(bundle, seqs, list(range(nU)))
         coact = {u: float(np.abs(A_act[u, sorted(prim)]).mean()) for u in range(nU)}
         cand = [u for u in range(nU) if u not in prim]
-        rng = np.random.default_rng(pseed)
 
-        def top(vec, k):
+        def top(vec, k, skip=0):
             a = np.nan_to_num(np.array([vec[u] for u in cand], dtype=float), nan=-1e9)
-            return [lh(cand[i]) for i in np.argsort(-a)[:k]]
+            return [lh(cand[i]) for i in np.argsort(-a)[skip:skip + k]]
 
-        k = len(doc_backup)
+        k = args.topk
+        if k != len(doc_backup):
+            raise ValueError(f"the documented-backup oracle has {len(doc_backup)} heads; "
+                             f"this comparison requires --topk {len(doc_backup)}")
         sel = {
             "documented (oracle)": list(doc_backup),
             "coax":  top(r["compensation"], k),
-            "own (first-order top-up)": top(r["single"], k),
+            "conditional only": top(r["conditional"], k),
+            "amplification ratio": top(
+                r["conditional"] / np.maximum(r["single"], 1e-12), k
+            ),
+            "CoAx next-8": top(r["compensation"], k, skip=k),
             "atpstar": top({u: aps[u] for u in cand}, k),
             "co-activation": top(coact, k),
-            "random": [lh(int(x)) for x in rng.choice(cand, size=k, replace=False)],
         }
 
         # references
-        _, _, ld_clean = acc_and_ld(prompts, None)
+        lp_clean = answer_probs(prompts, None)
+        _, _, ld_clean = acc_and_ld(prompts, lp_clean)
         lp_clean_unrel = answer_probs(UNRELATED, None)
         oracle_ab = list(primary) + sel["documented (oracle)"]
-        acc_o, ldm_o, ld_o = acc_and_ld(prompts, oracle_ab)
         lp_o = answer_probs(prompts, oracle_ab)
+        acc_o, ldm_o, ld_o = acc_and_ld(prompts, lp_o)
 
         row = {"clean_logit_diff": float(np.mean(ld_clean)), "oracle_accuracy": acc_o,
                "selectors": {}}
-        for name, heads in sel.items():
+
+        def evaluate_heads(heads):
             ab = list(primary) + list(heads)
-            acc, ldm, ld = acc_and_ld(prompts, ab)
             lp = answer_probs(prompts, ab)
-            # distance to the oracle's behaviour, per prompt then averaged
-            d_behav = float(np.mean([abs(a - b) for a, b in zip(ld, ld_o)]))
-            d_kl = float(np.mean([float((q.exp() * (q - p)).sum()) for q, p in zip(lp_o, lp)]))
-            # off-target collateral: how much unrelated text is disturbed
+            acc, ldm, ld = acc_and_ld(prompts, lp)
+            margin_distance = [abs(a - b) for a, b in zip(ld, ld_o)]
+            output_kl = [float((q.exp() * (q - p)).sum()) for q, p in zip(lp_o, lp)]
             lp_u = answer_probs(UNRELATED, ab)
-            coll = float(np.mean([float((q.exp() * (q - p)).sum())
-                                  for q, p in zip(lp_clean_unrel, lp_u)]))
-            row["selectors"][name] = {"accuracy": acc, "logit_diff": ldm,
-                                      "oracle_behavioural_distance": d_behav,
-                                      "oracle_kl": d_kl, "collateral_kl_unrelated": coll}
-            print(f"[ko] seed={pseed} {name:26s} acc={acc:.3f} ld={ldm:+.3f} "
-                  f"|d_oracle|={d_behav:.3f} KL_oracle={d_kl:.4f} collateral={coll:.4f}",
+            collateral = [float((q.exp() * (q - p)).sum()) for q, p in zip(lp_clean_unrel, lp_u)]
+            return {"accuracy": acc, "logit_diff": ldm,
+                    "oracle_behavioural_distance": float(np.mean(margin_distance)),
+                    "oracle_kl": float(np.mean(output_kl)),
+                    "collateral_kl_unrelated": float(np.mean(collateral)),
+                    "per_prompt_margin_distance": margin_distance,
+                    "per_prompt_oracle_kl": output_kl,
+                    "per_prompt_collateral_kl": collateral,
+                    "selected_heads": [list(map(int, head)) for head in heads]}
+
+        for name, heads in sel.items():
+            row["selectors"][name] = evaluate_heads(heads)
+            values = row["selectors"][name]
+            print(f"[ko] seed={pseed} {name:26s} acc={values['accuracy']:.3f} "
+                  f"ld={values['logit_diff']:+.3f} "
+                  f"|d_oracle|={values['oracle_behavioural_distance']:.3f} "
+                  f"KL_oracle={values['oracle_kl']:.4f} "
+                  f"collateral={values['collateral_kl_unrelated']:.4f}",
                   flush=True)
+
+        random_rows = []
+        random_heads = []
+        for draw in range(args.random_draws):
+            rng = np.random.default_rng(np.random.SeedSequence([pseed, draw]))
+            heads = [lh(int(x)) for x in rng.choice(cand, size=k, replace=False)]
+            random_heads.append([list(map(int, head)) for head in heads])
+            random_rows.append(evaluate_heads(heads))
+        scalar_fields = ("accuracy", "logit_diff", "oracle_behavioural_distance",
+                         "oracle_kl", "collateral_kl_unrelated")
+        prompt_fields = ("per_prompt_margin_distance", "per_prompt_oracle_kl",
+                         "per_prompt_collateral_kl")
+        random_result = {field: float(np.mean([item[field] for item in random_rows]))
+                         for field in scalar_fields}
+        random_result.update({
+            field: np.mean(np.asarray([item[field] for item in random_rows], dtype=float), axis=0).tolist()
+            for field in prompt_fields
+        })
+        random_result["selected_heads_by_draw"] = random_heads
+        row["selectors"]["random"] = random_result
+        random_label = f"random ({args.random_draws} draws)"
+        print(f"[ko] seed={pseed} {random_label:26s} "
+              f"acc={random_result['accuracy']:.3f} ld={random_result['logit_diff']:+.3f} "
+              f"|d_oracle|={random_result['oracle_behavioural_distance']:.3f} "
+              f"KL_oracle={random_result['oracle_kl']:.4f} "
+              f"collateral={random_result['collateral_kl_unrelated']:.4f}", flush=True)
         report["by_seed"][str(pseed)] = row
 
     names = list(report["by_seed"][str(args.seeds[0])]["selectors"])
@@ -175,6 +237,32 @@ def main() -> None:
         summ[n] = {f: col(f) for f in ("accuracy", "logit_diff", "oracle_behavioural_distance",
                                        "oracle_kl", "collateral_kl_unrelated")}
     report["summary"] = summ
+    pooled = {
+        name: np.concatenate([
+            np.asarray(report["by_seed"][str(seed)]["selectors"][name]
+                       ["per_prompt_margin_distance"], dtype=float)
+            for seed in args.seeds
+        ])
+        for name in names
+    }
+    paired_bootstrap = {}
+    for selector_index, name in enumerate(names):
+        if name in ("documented (oracle)", "coax"):
+            continue
+        rng = np.random.default_rng(np.random.SeedSequence(
+            [args.bootstrap_seed, selector_index]
+        ))
+        n = len(pooled["coax"])
+        draws = []
+        for _ in range(args.bootstrap):
+            idx = rng.integers(0, n, size=n)
+            draws.append(float((pooled[name][idx] - pooled["coax"][idx]).mean()))
+        paired_bootstrap[name] = {
+            "contrast": "selector margin distance - CoAx margin distance",
+            "mean_difference": float((pooled[name] - pooled["coax"]).mean()),
+            "ci95": [float(np.percentile(draws, 2.5)), float(np.percentile(draws, 97.5))],
+        }
+    report["paired_prompt_bootstrap_vs_coax"] = paired_bootstrap
     print("\n=== mean over seeds ===")
     for n, d in summ.items():
         print(f"  {n:26s} acc={d['accuracy']:.3f}  |d_oracle|={d['oracle_behavioural_distance']:.3f}"

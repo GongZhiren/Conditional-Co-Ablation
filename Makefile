@@ -3,13 +3,14 @@ MODEL_KEY ?= gpt2-small
 MODEL_PATH ?=
 MODEL_PATH_ARG := $(if $(MODEL_PATH),--model-path $(MODEL_PATH),)
 
-.PHONY: install check smoke headline mechanism causal completion knockout panel cross-model
+.PHONY: install check smoke headline conditional mechanism causal completion knockout panel cross-model
 
 install:
 	$(PYTHON) -m pip install -e .
 
 check:
 	$(PYTHON) scripts/check_release.py
+	PYTHONDONTWRITEBYTECODE=1 $(PYTHON) scripts/verify_scientific_invariants.py
 	$(PYTHON) -m compileall -q src experiments scripts
 
 smoke:
@@ -18,6 +19,10 @@ smoke:
 
 headline:
 	$(PYTHON) experiments/paper/backup_recovery_full.py --model-key $(MODEL_KEY) \
+		$(MODEL_PATH_ARG) --num-prompts 96 --seeds 1 15 22 8 --position-mode last --top-r 0
+
+conditional:
+	$(PYTHON) experiments/paper/conditional_gradient_contrast.py --model-key $(MODEL_KEY) \
 		$(MODEL_PATH_ARG) --num-prompts 96 --seeds 1 15 22 8 --position-mode last --top-r 0
 
 mechanism:

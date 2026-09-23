@@ -11,7 +11,9 @@ Before reporting or releasing a result:
    approximation to the full-vocabulary paper number without labeling it.
 4. Preserve the JSON artifact emitted by the script; do not copy rounded README
    numbers into a result file.
-5. Run `python scripts/check_release.py` before publishing.
+5. Keep each hook-intervention model on one execution device; parallelize across
+   models rather than sharding one model across GPUs.
+6. Run `python scripts/check_release.py` before publishing.
 
 The dependency versions used for the release checks are recorded in
 `requirements-tested.txt`.

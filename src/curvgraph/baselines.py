@@ -1,16 +1,16 @@
 """First-order circuit-attribution baselines + faithfulness utilities.
 
-These are the field-standard comparisons our second-order co-ablation method must beat: every
-published circuit-discovery method (ACDC, attribution/edge-attribution patching, AtP*) is
-first-order -- it scores a head by its single-component (gradient or ablation) effect and
-selects greedily, so it structurally misses redundant / backup heads whose solo effect is
-muted by self-repair. We implement two:
+These are first-order comparisons for the second-order co-ablation method. They score a head by
+its single-component gradient or ablation effect, which can be muted for redundant components
+under self-repair. We implement:
 
   * attribution_patching (ATP): grad of a behavioral metric w.r.t. a head's output, times the
     output -- the first-order Taylor estimate of zero-ablating that head. (Nanda 2023; the
     node-level form behind EAP / AtP*.)
-  * integrated_gradient_attribution (EAP-IG-style): the same, path-integrated from a corrupt
-    baseline to the clean input, which is the more faithful variant (Hanna et al. 2024).
+  * integrated_gradient_attribution: activation-space EAP-IG from a zero head-output baseline
+    to the clean activation (Hanna et al. 2024).
+  * head_attribution_graddrop: the AtP* GradDrop correction, adapted to the same zero-ablation
+    head-output target (Kramar et al. 2024).
 
 Plus faithfulness_curve: normalized logit-diff recovered vs. circuit size, the metric the
 field (MIB, Wang 2022) actually reports -- not just same-circuit AUC.
@@ -20,8 +20,6 @@ Kept separate from coablation.py so the novel method stays clean.
 from __future__ import annotations
 
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
-
-from contextlib import contextmanager
 
 import numpy as np
 import torch
@@ -100,86 +98,140 @@ def head_attribution_patching(bundle: ModelBundle, prompts: Sequence[Dict[str, s
     nH, hd = bundle.num_heads, bundle.head_dim
     nU = bundle.num_layers * nH
     score = np.zeros(nU)
+    num_examples = 0
     for ex in prompts:
         handles, store = _head_output_hooks(bundle)
         try:
             bundle.model.zero_grad(set_to_none=True)
             m = metric(bundle, ex)
             m.backward()
+            batch_size = next(iter(store.values())).shape[0]
+            per_example = np.zeros((batch_size, nU))
             for li, x in store.items():
                 if x.grad is None:
                     continue
-                attr = (x * x.grad).detach()[0]                 # [T, nH*hd]
-                for hi in range(nH):
-                    s = attr[:, hi * hd:(hi + 1) * hd].sum().item()
-                    score[C.head_index(li, hi, nH)] += s
+                attr = (x * x.grad).detach()                    # [B, T, nH*hd]
+                values = attr.reshape(*attr.shape[:-1], nH, hd).sum(dim=(1, 3))
+                start = li * nH
+                per_example[:, start:start + nH] += values.float().cpu().numpy()
         finally:
             for h in handles:
                 h.remove()
-    return np.abs(score / max(1, len(prompts)))
+        # AtP is E_x[|I_hat(n; x)|], not |E_x[I_hat(n; x)]|.  Taking the
+        # magnitude before the dataset average avoids cancellation across examples.
+        score += np.abs(per_example).sum(axis=0)
+        num_examples += per_example.shape[0]
+    return score / max(1, num_examples)
+
+
+def _register_residual_contribution_graddrop(layer):
+    """Keep a residual block's forward value but detach only its residual contribution."""
+    state: Dict[str, torch.Tensor] = {}
+
+    def capture_residual(_module, inputs):
+        state["residual"] = inputs[0]
+
+    def detach_contribution(_module, _inputs, output):
+        residual = state["residual"]
+        hidden = output[0] if isinstance(output, (tuple, list)) else output
+        # With an Accelerate-sharded model, the pre-hook can observe the block input
+        # before it is transferred to the block's execution device, while the forward
+        # hook observes the output on that execution device.  Moving the identity
+        # residual to the output device preserves the same computation and autograd
+        # path while avoiding a cross-device subtraction at shard boundaries.
+        if residual.device != hidden.device:
+            residual = residual.to(hidden.device)
+        dropped = residual + (hidden - residual).detach()
+        if isinstance(output, tuple):
+            return (dropped,) + tuple(output[1:])
+        if isinstance(output, list):
+            return [dropped] + list(output[1:])
+        return dropped
+
+    return [
+        layer.register_forward_pre_hook(capture_residual),
+        layer.register_forward_hook(detach_contribution),
+    ]
 
 
 def head_attribution_graddrop(bundle: ModelBundle, prompts: Sequence[Dict[str, str]],
-                              metric=_ioi_metric) -> np.ndarray:
-    """AtP*-style attribution with GradDrop (Kramar et al. 2024). Plain attribution patching gives
-    false negatives when a node's direct and indirect gradient paths cancel -- exactly the
-    self-repair cancellation that hides backups. GradDrop runs L attributions, each zeroing the
-    gradient flowing through one transformer block's output (cutting that block's indirect path),
-    and takes the mean of the per-node absolute scores. We implement the GradDrop fix (the part
-    relevant to backup discovery); the QK-fix targets Q/K saturation, not head-output nodes."""
+                              metric=_ioi_metric,
+                              ablate_heads: Optional[Sequence[Tuple[int, int]]] = None) -> np.ndarray:
+    """AtP* GradDrop for head-output nodes, using a zero-ablation perturbation.
+
+    For each layer, the forward value is kept exactly unchanged while the Jacobian of that
+    layer's *residual contribution* is detached.  The identity residual path remains live; this
+    is the distinction between GradDrop and stopping the gradient at the whole block output.
+    Absolute per-example estimates are summed over the ``L`` dropped layers and divided by
+    ``L - 1``, as in Kramar et al. (2024).  The Q/K saturation correction is not applicable to
+    the post-attention head-output nodes scored here.  When ``ablate_heads`` is supplied, the
+    same estimator is evaluated in that intervened model and the ablated units remain at zero.
+    """
     nH, hd = bundle.num_heads, bundle.head_dim
     nU = bundle.num_layers * nH
     L = bundle.num_layers
     layers = layer_modules(bundle)
-    acc = np.zeros(nU)
-    for drop_l in range(L):
-        per_drop = np.zeros(nU)
-        for ex in prompts:
+    ablated_by_layer: Dict[int, List[int]] = {}
+    for layer, head in (ablate_heads or []):
+        ablated_by_layer.setdefault(layer, []).append(head)
+    acc = np.zeros(nU, dtype=np.float64)
+    num_examples = 0
+    for ex in prompts:
+        per_example = None
+        for drop_l in range(L):
+            ablation_handles = C.register_heads_ablation(bundle, ablate_heads) \
+                if ablate_heads else []
             handles, store = _head_output_hooks(bundle)
-            # forward hook on the dropped block to zero the gradient on its output (cut its path)
-            blk_handles = []
-            def mk_drop():
-                def fh(_m, _inp, out):
-                    h = out[0] if isinstance(out, tuple) else out
-                    if torch.is_tensor(h) and h.requires_grad:
-                        h.register_hook(lambda g: torch.zeros_like(g))
-                    return out
-                return fh
-            blk_handles.append(layers[drop_l].register_forward_hook(mk_drop()))
+            blk_handles = _register_residual_contribution_graddrop(layers[drop_l])
             try:
                 bundle.model.zero_grad(set_to_none=True)
                 m = metric(bundle, ex)
                 m.backward()
+                batch_size = next(iter(store.values())).shape[0]
+                if per_example is None:
+                    per_example = np.zeros((batch_size, nU), dtype=np.float64)
+                per_drop = np.zeros((batch_size, nU), dtype=np.float64)
                 for li, x in store.items():
                     if x.grad is None:
                         continue
-                    attr = (x * x.grad).detach()[0]
-                    for hi in range(nH):
-                        per_drop[C.head_index(li, hi, nH)] += attr[:, hi * hd:(hi + 1) * hd].sum().item()
+                    attr = (x * x.grad).detach()
+                    values = attr.reshape(*attr.shape[:-1], nH, hd).sum(dim=(1, 3))
+                    values = values.float().cpu().numpy()
+                    if li in ablated_by_layer:
+                        values[:, ablated_by_layer[li]] = 0.0
+                    start = li * nH
+                    per_drop[:, start:start + nH] += values
             finally:
                 for h in handles:
                     h.remove()
                 for h in blk_handles:
                     h.remove()
-        acc += np.abs(per_drop / max(1, len(prompts)))
-    return acc / max(1, L)
+                for h in ablation_handles:
+                    h.remove()
+            per_example += np.abs(per_drop)
+        if per_example is not None:
+            acc += per_example.sum(axis=0) / max(1, L - 1)
+            num_examples += per_example.shape[0]
+    return acc / max(1, num_examples)
 
 
 def conditional_attribution_patching(bundle: ModelBundle, prompts: Sequence[Dict[str, str]],
                                      ablate_heads: Sequence[Tuple[int, int]],
                                      metric=_ioi_metric) -> np.ndarray:
-    """GIM-style self-repair-aware attribution (our fair adaptation for backup DISCOVERY).
+    """Attribution patching evaluated in the primary-ablated graph.
 
-    GIM (Edin et al. 2025) corrects gradient attribution for self-repair during backprop; as
-    published it returns corrected *scores*, not a backup *set*. The principle adapts to backup
-    discovery directly: measure the gradient attribution of the behavior ON THE PRIMARY-ABLATED
-    model. With the primaries ablated, the dormant backups become load-bearing, so their gradient
-    is no longer muted -- a first-order analogue of our conditional co-ablation. We rank candidate
-    heads by this conditional gradient x activation. (Heads in the ablated set get score 0.)"""
+    This is the removed-state gradient control for backup discovery: it uses the same conditional
+    context as CoAx, but remains a first-order local estimate rather than a finite intervention
+    difference. The ablation is installed in-graph, so primary-head contributions and gradients
+    remain zero throughout backward. Heads in the ablated set receive score zero.
+    """
     nH, hd = bundle.num_heads, bundle.head_dim
     nU = bundle.num_layers * nH
-    abl_units = set(C.head_index(l, h, nH) for (l, h) in ablate_heads)
+    ablated_by_layer: Dict[int, List[int]] = {}
+    for layer, head in ablate_heads:
+        ablated_by_layer.setdefault(layer, []).append(head)
     score = np.zeros(nU)
+    num_examples = 0
     for ex in prompts:
         abl_handles = C.register_heads_ablation(bundle, ablate_heads)   # zero primaries in-graph
         handles, store = _head_output_hooks(bundle)
@@ -187,74 +239,96 @@ def conditional_attribution_patching(bundle: ModelBundle, prompts: Sequence[Dict
             bundle.model.zero_grad(set_to_none=True)
             m = metric(bundle, ex)
             m.backward()
+            batch_size = next(iter(store.values())).shape[0]
+            per_example = np.zeros((batch_size, nU))
             for li, x in store.items():
                 if x.grad is None:
                     continue
-                attr = (x * x.grad).detach()[0]
-                for hi in range(nH):
-                    u = C.head_index(li, hi, nH)
-                    if u in abl_units:
-                        continue
-                    score[u] += attr[:, hi * hd:(hi + 1) * hd].sum().item()
+                attr = (x * x.grad).detach()
+                values = attr.reshape(*attr.shape[:-1], nH, hd).sum(dim=(1, 3))
+                values = values.float().cpu().numpy()
+                if li in ablated_by_layer:
+                    values[:, ablated_by_layer[li]] = 0.0
+                start = li * nH
+                per_example[:, start:start + nH] += values
         finally:
             for h in handles:
                 h.remove()
             for h in abl_handles:
                 h.remove()
-    return np.abs(score / max(1, len(prompts)))
+        score += np.abs(per_example).sum(axis=0)
+        num_examples += per_example.shape[0]
+    return score / max(1, num_examples)
 
 
 def integrated_gradient_attribution(bundle: ModelBundle, prompts: Sequence[Dict[str, str]],
                                     steps: int = 5, metric=_ioi_metric) -> np.ndarray:
-    """EAP-IG-style: integrate grad x (clean activation) along alpha in (0,1] scaling the head
-    outputs from a zero (corrupt) baseline to clean. More faithful than plain ATP."""
+    """Activation-space EAP-IG for zero-ablation of head-output nodes.
+
+    This is the standard component-activation variant: cache the true clean head outputs, then
+    interpolate one attention layer at a time from zero to its clean concatenated-head output.
+    Other layers are recomputed normally.  It therefore costs ``steps * num_layers``
+    forward/backward passes per example; simultaneously scaling every layer is a different path
+    and is not activation-space EAP-IG.
+    """
     nH, hd = bundle.num_heads, bundle.head_dim
     nU = bundle.num_layers * nH
-    score = np.zeros(nU)
+    score = np.zeros(nU, dtype=np.float64)
     layers = layer_modules(bundle)
     for ex in prompts:
-        # accumulate grad over alpha steps while scaling the o_proj input by alpha.
-        acc = {li: None for li in range(bundle.num_layers)}
-        clean = {li: None for li in range(bundle.num_layers)}
-        for step in range(1, steps + 1):
-            alpha = step / steps
-            store: Dict[int, torch.Tensor] = {}
-            handles = []
+        clean: Dict[int, torch.Tensor] = {}
+        clean_handles = []
 
-            def mk(li):
-                def hook(_m, inp):
-                    x = inp[0]
-                    if x.dim() == 3:
-                        xs = (alpha * x)
-                        xs.retain_grad()
-                        store[li] = xs
-                        if clean[li] is None:
-                            clean[li] = x.detach()[0]
-                        return (xs,) + tuple(inp[1:])
-                    return inp
-                return hook
+        def capture_clean(li):
+            def hook(_module, inputs):
+                x = inputs[0]
+                if x.dim() == 3:
+                    clean[li] = x.detach().clone()
+            return hook
 
-            for li in range(bundle.num_layers):
-                cp = C._cproj(C._attn_module(layers[li]))
-                if cp is not None:
-                    handles.append(cp.register_forward_pre_hook(mk(li)))
-            try:
-                bundle.model.zero_grad(set_to_none=True)
-                m = metric(bundle, ex)
-                m.backward()
-                for li, xs in store.items():
-                    if xs.grad is not None:
-                        g = xs.grad.detach()[0]
-                        acc[li] = g if acc[li] is None else acc[li] + g
-            finally:
-                for h in handles:
-                    h.remove()
-        for li in range(bundle.num_layers):
-            if acc[li] is None or clean[li] is None:
+        for li, layer in enumerate(layers):
+            cp = C._cproj(C._attn_module(layer))
+            if cp is not None:
+                clean_handles.append(cp.register_forward_pre_hook(capture_clean(li)))
+        try:
+            with torch.no_grad():
+                metric(bundle, ex)
+        finally:
+            for handle in clean_handles:
+                handle.remove()
+
+        for li, layer in enumerate(layers):
+            if li not in clean:
                 continue
-            attr = (clean[li] * acc[li] / steps)                # [T, nH*hd]
+            grad_sum = torch.zeros_like(clean[li], dtype=torch.float32)
+            cp = C._cproj(C._attn_module(layer))
+            for step in range(1, steps + 1):
+                alpha = step / steps
+                store: Dict[str, torch.Tensor] = {}
+
+                def interpolate(_module, inputs, alpha=alpha, clean_value=clean[li]):
+                    x = inputs[0]
+                    xs = alpha * clean_value.to(device=x.device, dtype=x.dtype) + x * 0.0
+                    xs.retain_grad()
+                    store["value"] = xs
+                    return (xs,) + tuple(inputs[1:])
+
+                handle = cp.register_forward_pre_hook(interpolate)
+                try:
+                    bundle.model.zero_grad(set_to_none=True)
+                    m = metric(bundle, ex)
+                    m.backward()
+                    xs = store.get("value")
+                    if xs is not None and xs.grad is not None:
+                        grad_sum += xs.grad.detach().float()
+                finally:
+                    handle.remove()
+            attr = -clean[li].float() * (grad_sum / max(1, steps))
             for hi in range(nH):
-                score[C.head_index(li, hi, nH)] += attr[:, hi * hd:(hi + 1) * hd].sum().item()
+                score[C.head_index(li, hi, nH)] += \
+                    attr[..., hi * hd:(hi + 1) * hd].sum().item()
+    # Match the official EAP-IG aggregation: accumulate signed dataset scores,
+    # then rank nodes by the magnitude of that aggregate.
     return np.abs(score / max(1, len(prompts)))
 
 
@@ -280,103 +354,4 @@ def faithfulness_curve(bundle: ModelBundle, prompts: Sequence[Dict[str, str]],
         out["faithfulness"].append(float((m_c - m_empty) / denom))
     xs = np.array(out["sizes"], dtype=float) / max(1, nU)
     out["auc"] = float(np.trapz(out["faithfulness"], xs) / max(1e-9, xs[-1] - xs[0])) if len(xs) > 1 else None
-    return out
-
-
-@contextmanager
-def _gim_context(model, **gim_kwargs):
-    """The released GIM context, with one device-placement fix and no algorithmic change.
-
-    `gim.context.norm._swap_norms_with_detach` constructs its replacement modules without a
-    `device=`/`dtype=` argument and only copies the parameter VALUES, so on a CUDA model the
-    swapped norms keep CPU parameters and the forward pass raises a device mismatch. We enter the
-    released context unchanged and then move any swapped module onto the model's device and dtype.
-    The forward mathematics, the detached statistics, the softmax temperature and the Q/K/V
-    gradient scales are exactly the package's.
-    """
-    from gim import GIM
-    from gim.context.norm import LayerNormDetach, RMSNormDetach
-
-    ref = next(model.parameters())
-    with GIM(model, **gim_kwargs):
-        for mod in model.modules():
-            if isinstance(mod, (LayerNormDetach, RMSNormDetach)):
-                mod.to(device=ref.device, dtype=ref.dtype)
-        yield
-
-
-def head_attribution_gim(bundle: ModelBundle, prompts: Sequence[Dict[str, str]],
-                         metric=_ioi_metric, **gim_kwargs) -> np.ndarray:
-    """Head attribution under the OFFICIAL GIM backward pass (gim-explain package).
-
-    GIM is not a separate attribution algorithm but a set of backward-pass modifications --
-    detached LayerNorm/RMSNorm statistics, a temperature-adjusted softmax backward, and rescaled
-    Q/K/V gradients -- applied as a context manager. That makes the comparison exact rather than
-    approximate: we compute the SAME gradient-times-activation head score on the SAME prompts
-    against the SAME metric, and the only thing that differs is the backward pass. Any gap is
-    therefore attributable to the score's form, not to a difference in setup.
-
-    Defaults are the package defaults, which are the paper's (T=2, q=k=0.25, v=0.5, freeze_norm).
-    """
-    nH, hd = bundle.num_heads, bundle.head_dim
-    nU = bundle.num_layers * nH
-    score = np.zeros(nU)
-    for ex in prompts:
-        handles, store = _head_output_hooks(bundle)
-        try:
-            bundle.model.zero_grad(set_to_none=True)
-            with _gim_context(bundle.model, **gim_kwargs):
-                m = metric(bundle, ex)
-                m.backward()
-            for li, x in store.items():
-                if x.grad is None:
-                    continue
-                attr = (x * x.grad).detach()[0]
-                for hi in range(nH):
-                    score[C.head_index(li, hi, nH)] += \
-                        attr[:, hi * hd:(hi + 1) * hd].sum().item()
-        finally:
-            for h in handles:
-                h.remove()
-    return np.abs(score / max(1, len(prompts)))
-
-
-def head_attribution_gim_conditional(bundle: ModelBundle, prompts: Sequence[Dict[str, str]],
-                                     ablate_heads: Sequence[Tuple[int, int]],
-                                     metric=_ioi_metric, **gim_kwargs) -> np.ndarray:
-    """Official GIM computed on the PRIMARY-ABLATED model -- the matched-information baseline.
-
-    CoAx is given the primary seed, so a comparison against a seed-free score is not matched in
-    information. This variant hands GIM exactly the same seed: the gradients are taken on the model
-    with the primaries already ablated, so both methods see the same intervention and differ only
-    in what they read off it.
-    """
-    nH, hd = bundle.num_heads, bundle.head_dim
-    nU = bundle.num_layers * nH
-    score = np.zeros(nU)
-    abl = C.register_heads_ablation_grouped(bundle, list(ablate_heads))
-    try:
-        for ex in prompts:
-            handles, store = _head_output_hooks(bundle)
-            try:
-                bundle.model.zero_grad(set_to_none=True)
-                with _gim_context(bundle.model, **gim_kwargs):
-                    m = metric(bundle, ex)
-                    m.backward()
-                for li, x in store.items():
-                    if x.grad is None:
-                        continue
-                    attr = (x * x.grad).detach()[0]
-                    for hi in range(nH):
-                        score[C.head_index(li, hi, nH)] += \
-                            attr[:, hi * hd:(hi + 1) * hd].sum().item()
-            finally:
-                for h in handles:
-                    h.remove()
-    finally:
-        for h in abl:
-            h.remove()
-    out = np.abs(score / max(1, len(prompts)))
-    for (l, h) in ablate_heads:
-        out[C.head_index(l, h, nH)] = 0.0
     return out

@@ -30,7 +30,7 @@ the behaviour far BELOW the no-backup floor, which scores high on "repair remove
 nothing like the documented intervention. We therefore also report the overshoot |carried(X) - 1|
 against the documented set's own value, so undershooting and overshooting are both penalised.
 
-  PYTHONPATH=src CUDA_VISIBLE_DEVICES=3 python scripts/run_freeze_selected.py \
+  PYTHONPATH=src CUDA_VISIBLE_DEVICES=0 python experiments/paper/causal_freezing.py \
       --model-key gpt2-small --num-prompts 96 --seeds 1 8 15 22 --k 8
 """
 from __future__ import annotations
@@ -49,6 +49,7 @@ from curvgraph._core.model import load_model_bundle, bundle_device
 from curvgraph import circuits as C
 from curvgraph import baselines as B
 from curvgraph.coablation import CoAblation, coactivation_affinity
+from curvgraph.artifacts import load_headline_vectors
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from curvgraph.patching import capture_final_head_slices, ioi_logit_diff_with_patch
@@ -70,6 +71,9 @@ def main() -> None:
     ap.add_argument("--seeds", type=int, nargs="+", default=[1, 8, 15, 22])
     ap.add_argument("--k", type=int, default=8, help="set size; 8 matches the documented backups")
     ap.add_argument("--position-mode", default="last", choices=["all", "last", "full"])
+    ap.add_argument("--headline-dump-template",
+                    default="outputs/coablation/bc_dump_seed{seed}.json",
+                    help="validated score cache from the headline run; recomputed if absent/mismatched")
     ap.add_argument("--out", default="outputs/coablation/freeze_selected_MAIN.json")
     args = ap.parse_args()
 
@@ -96,10 +100,20 @@ def main() -> None:
         seqs = [s for s in seqs if s.shape[1] >= 4]
 
         # ---- selectors, none of which sees a backup label ----
-        co = CoAblation(bundle, seqs, top_r=top_r, position_mode=args.position_mode)
-        r = co.conditional_compensation(prim_h, head_set=list(range(nU)))
+        cached = load_headline_vectors(
+            args.headline_dump_template.format(seed=sd), model=args.model_key, seed=sd,
+            num_prompts=args.num_prompts, position_mode=args.position_mode,
+            top_r=top_r, num_units=nU,
+        )
+        if cached is None:
+            co = CoAblation(bundle, seqs, top_r=top_r, position_mode=args.position_mode)
+            r = co.conditional_compensation(prim_h, head_set=list(range(nU)))
+            aps = B.head_attribution_graddrop(bundle, prompts)
+        else:
+            print(f"[freeze] seed={sd} reusing validated headline scores", flush=True)
+            r = cached
+            aps = cached["atpstar"]
         A_act = coactivation_affinity(bundle, seqs, list(range(nU)))
-        aps = B.head_attribution_graddrop(bundle, prompts)
         eps = 1e-12
         vec = {
             "CoAx growth": r["compensation"],

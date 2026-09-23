@@ -16,7 +16,7 @@ circuit is removed (k = 0,1,2,3 primary name-movers ablated, ordered by their ow
       they write the answer), and (ii) the backups' DLA to the correct answer RISES once the
       primaries are ablated -- a direct measurement of the hand-off, versus a flat random control.
 
-  PYTHONPATH=src CUDA_VISIBLE_DEVICES=0 python scripts/run_mechanism.py --model-key gpt2-small
+  PYTHONPATH=src CUDA_VISIBLE_DEVICES=0 python experiments/paper/mechanism_handoff.py --model-key gpt2-small
 """
 from __future__ import annotations
 
