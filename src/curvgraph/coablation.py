@@ -1,14 +1,16 @@
-"""Second-order co-ablation curvature for circuit discovery.
+"""Conditional co-ablation for intervention-conditioned circuit completion.
 
 The single-ablation kernel H_uv = E<dz_u, dz_v>_F cannot see
 *compensation*: when two units substitute for each other, ablating one alone barely moves
-the output, so their first-order affinity is small. This module adds the genuinely
-second-order signals that capture compensation:
+the output, so their intact-state affinity is small. This module provides:
 
   * pairwise synergy   I_uv = dz_{u,v} - dz_u - dz_v   (Fisher-weighted, centered)
-      -> large for MUTUALLY-compensating / cooperating pairs (e.g. name-mover cliques).
+      -> an auxiliary diagnostic for explicit pair interactions.
   * conditional compensation  comp_u(S) = E(dz_u | S ablated) - E(dz_u | {})
-      -> large for PARALLEL-SUBSTITUTE backups (dormant until the primaries S are gone).
+      -> signed growth for backups that become important after the primaries S are removed.
+
+The conditional two-state effect change aggregates every interaction order that links a candidate
+to the supplied primary set; it is not restricted to pairwise interactions.
 
 Both are computed with plain HF hooks via curvgraph.circuits primitives. Teacher top-r and
 any conditioning-set baseline are computed once and reused, so the cost is O(M) forwards for
@@ -246,7 +248,7 @@ class CoAblation:
         d = np.sqrt(np.clip(np.diag(H), 1e-12, None))
         return H / np.outer(d, d)
 
-    # ---------------------------------------------------------- second order
+    # ------------------------------------------------ explicit pairwise diagnostic
     def pairwise_synergy(self, head_set: Sequence[int], single: Optional[np.ndarray] = None,
                          normalize: bool = True) -> np.ndarray:
         """S_uv = mean_t ||dz_{u,v} - dz_u - dz_v||^2 over the head set (symmetric, O(m^2))."""

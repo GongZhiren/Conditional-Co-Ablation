@@ -32,7 +32,7 @@ K_EAP = "EAP-IG (1st-order)"
 K_APS = "AtP* GradDrop (1st-order)"
 K_COND = "conditional energy (removed-state control)"
 K_RATIO = "conditional amplification ratio (normalized variant)"
-K_COAX = "conditional co-ablation (ours, 2nd-order)"
+K_COAX = "conditional co-ablation (ours, signed growth)"
 
 
 def main() -> None:

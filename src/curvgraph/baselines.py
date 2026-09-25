@@ -1,8 +1,7 @@
-"""First-order circuit-attribution baselines + faithfulness utilities.
+"""Circuit-attribution baselines and faithfulness utilities.
 
-These are first-order comparisons for the second-order co-ablation method. They score a head by
-its single-component gradient or ablation effect, which can be muted for redundant components
-under self-repair. We implement:
+These intact-state comparisons score a head by its single-component gradient or ablation effect,
+which can be muted for redundant components under self-repair. We implement:
 
   * attribution_patching (ATP): grad of a behavioral metric w.r.t. a head's output, times the
     output -- the first-order Taylor estimate of zero-ablating that head. (Nanda 2023; the

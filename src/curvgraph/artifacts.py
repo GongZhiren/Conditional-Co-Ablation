@@ -11,7 +11,7 @@ import numpy as np
 SCORE_KEYS = {
     "single": "single-ablation saliency (1st-order)",
     "conditional": "conditional energy (removed-state control)",
-    "compensation": "conditional co-ablation (ours, 2nd-order)",
+    "compensation": "conditional co-ablation (ours, signed growth)",
     "atp": "ATP (1st-order grad)",
     "conditional_gradient": "conditional AtP (removed-state gradient control)",
     "atpstar": "AtP* GradDrop (1st-order)",

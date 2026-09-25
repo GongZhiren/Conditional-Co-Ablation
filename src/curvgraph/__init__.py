@@ -1,15 +1,13 @@
-"""curvgraph — Second-order co-ablation curvature for circuit discovery.
+"""curvgraph — Conditional co-ablation for intervention-conditioned circuit completion.
 
-The package implements a second-order co-ablation method for
-mechanistic circuit discovery: pairwise synergy and a conditional/greedy co-ablation signal
-that recover the COMPENSATION and BACKUP/SELF-REPAIR
-structure single-component ablation, co-activation clustering, and weight-subspace affinity
-all miss. Fully self-contained: the calibration / ablation / model infrastructure it builds
-on is bundled in ``curvgraph._core`` (no code outside this repository is required).
+The package implements CoAx, whose two-state effect change aggregates all interaction orders
+linking a candidate to a supplied primary set. Its signed-growth score identifies compensation
+and backup/self-repair structure that intact-state single-component scores can miss. Pairwise
+synergy remains available as an auxiliary diagnostic. The calibration, ablation, and model
+infrastructure is bundled in ``curvgraph._core``.
 
 Core method code:
-  coablation.py  the second-order method: 1st-order affinity + pairwise synergy I_uv +
-                 conditional compensation comp_u (backup / self-repair discovery)
+  coablation.py  conditional signed growth plus auxiliary pairwise synergy
   circuits.py    GPT-2 circuit ground truth, single-ablation kernel, induction detection,
                  causal scrubbing, controls (co-activation, random); head-level plumbing
 The public experiment entry points live under ``experiments/paper``.
