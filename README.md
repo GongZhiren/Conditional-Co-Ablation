@@ -8,6 +8,10 @@
 primary circuit is removed. It is a forward-only, label-free way to recover
 dormant components that become load-bearing under intervention.**
 
+<p align="center">
+  <a href="https://gongzhiren.github.io/personal-website/"><strong>Zhiren Gong</strong></a>, He Lu, Tiantong Wang, Yichi Zhang, Yixin Wang, Zihao Zeng, Ming Xiao, Chau Yuen, Wei Yang Bryan Lim
+</p>
+
 <table>
   <tr>
     <td><strong>📄 Paper</strong></td>
